@@ -77,6 +77,9 @@ func NewServer(ctx context.Context, logFactory log.ObservableFactory, options op
 		httpServer: &http.Server{
 			Addr:    options.ExternalController,
 			Handler: chiRouter,
+			BaseContext: func(net.Listener) context.Context {
+				return ctx
+			},
 		},
 		trafficManager:           trafficManager,
 		logDebug:                 logFactory.Level() >= log.LevelDebug,
@@ -125,7 +128,7 @@ func NewServer(ctx context.Context, logFactory log.ObservableFactory, options op
 		r.Mount("/rules", ruleRouter(s.router))
 		r.Mount("/connections", connectionRouter(s.ctx, s.router, trafficManager))
 		r.Mount("/providers/proxies", proxyProviderRouter(s))
-		r.Mount("/providers/rules", ruleProviderRouter())
+		r.Mount("/providers/rules", ruleProviderRouter(s))
 		r.Mount("/script", scriptRouter())
 		r.Mount("/profile", profileRouter())
 		r.Mount("/cache", cacheRouter(ctx))

@@ -149,7 +149,9 @@ type URLTestGroup interface {
 
 func OutboundTag(detour Outbound) string {
 	if group, isGroup := detour.(OutboundGroup); isGroup {
-		return group.Now()
+		if selected := group.Now(); selected != "" {
+			return selected
+		}
 	}
 	return detour.Tag()
 }

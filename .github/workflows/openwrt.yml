@@ -1,0 +1,127 @@
+name: Build OpenWrt packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version
+        required: true
+        type: string
+  push:
+    tags:
+      - "v*-extended-*-f*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openwrt-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [amd64, arm64, 386, armv7, mipsle]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: service/admin_panel/web/package-lock.json
+
+      - name: Prepare cronet-go source
+        run: |
+          set -euo pipefail
+          path="$HOME/.cache/sing-box-forkop/cronet-go"
+          revision=$(tr -d '[:space:]' < .github/CRONET_GO_VERSION)
+          mkdir -p "$path"
+          git -C "$path" init -q
+          git -C "$path" remote add origin https://github.com/sagernet/cronet-go.git
+          git -C "$path" fetch --depth=1 origin "$revision"
+          git -C "$path" checkout -q --detach FETCH_HEAD
+          git -C "$path" submodule update --init --recursive --depth=1
+
+      - name: Cache Chromium toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/sing-box-forkop/cronet-go/naiveproxy/src/third_party/llvm-build/
+            ~/.cache/sing-box-forkop/cronet-go/naiveproxy/src/gn/out/
+            ~/.cache/sing-box-forkop/cronet-go/naiveproxy/src/chrome/build/pgo_profiles/
+            ~/.cache/sing-box-forkop/cronet-go/naiveproxy/src/out/sysroot-build/
+          key: chromium-musl-${{ matrix.target }}-${{ hashFiles('.github/CRONET_GO_VERSION') }}
+
+      - name: Install package tools
+        run: |
+          set -euxo pipefail
+          sudo gem install fpm --no-document
+          sudo apt-get update
+          sudo apt-get install -y upx-ucl
+          docker run --rm -v /usr/local/bin:/mnt alpine:edge sh -c \
+            "apk add --no-cache apk-tools-static && cp /sbin/apk.static /mnt/apk && chmod +x /mnt/apk"
+
+      - name: Build packages
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="$INPUT_VERSION"
+          version="${version#v}"
+          if [ -n "$version" ]; then
+            bash ./build.sh '${{ matrix.target }}' "$version"
+          else
+            bash ./build.sh '${{ matrix.target }}'
+          fi
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-${{ matrix.target }}
+          path: |
+            dist/*.ipk
+            dist/*.apk
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            tag="v${INPUT_VERSION#v}"
+          fi
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" --target "$GITHUB_SHA" --generate-notes
+          gh release upload "$tag" dist/* --clobber

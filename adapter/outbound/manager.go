@@ -214,12 +214,116 @@ func (m *Manager) Default() adapter.Outbound {
 	return m.defaultOutbound
 }
 
+func (m *Manager) Started() bool {
+	m.access.RLock()
+	defer m.access.RUnlock()
+	return m.started
+}
+
+func (m *Manager) SwapBatch(expectedOld map[string]adapter.Outbound, candidates []adapter.Outbound) (map[string]adapter.Outbound, error) {
+	m.access.Lock()
+	defer m.access.Unlock()
+	removeSet := make(map[string]bool, len(expectedOld))
+	for tag, expected := range expectedOld {
+		if current := m.outboundByTag[tag]; current == nil || current != expected {
+			return nil, E.New("outbound changed before batch swap: ", tag)
+		}
+		removeSet[tag] = true
+	}
+	candidateByTag := make(map[string]adapter.Outbound, len(candidates))
+	for _, candidate := range candidates {
+		tag := candidate.Tag()
+		if tag == "" || candidateByTag[tag] != nil {
+			return nil, E.New("invalid duplicate outbound candidate: ", tag)
+		}
+		if _, loaded := m.outboundByTag[tag]; loaded && !removeSet[tag] {
+			return nil, E.New("outbound already exists: ", tag)
+		}
+		candidateByTag[tag] = candidate
+	}
+	for tag := range removeSet {
+		for _, dependent := range m.dependByTag[tag] {
+			if !removeSet[dependent] {
+				return nil, E.New("outbound[", tag, "] is depended by ", dependent)
+			}
+		}
+	}
+	for _, candidate := range candidates {
+		for _, dependency := range candidate.Dependencies() {
+			if candidateByTag[dependency] != nil {
+				continue
+			}
+			if _, loaded := m.outboundByTag[dependency]; loaded && !removeSet[dependency] {
+				continue
+			}
+			if m.endpoint == nil {
+				return nil, E.New("outbound dependency not found: ", dependency)
+			}
+			if _, loaded := m.endpoint.Get(dependency); !loaded {
+				return nil, E.New("outbound dependency not found: ", dependency)
+			}
+		}
+	}
+
+	oldOutbounds := make(map[string]adapter.Outbound, len(expectedOld))
+	for tag := range removeSet {
+		oldOutbound := m.outboundByTag[tag]
+		oldOutbounds[tag] = oldOutbound
+		for _, dependency := range oldOutbound.Dependencies() {
+			m.dependByTag[dependency] = common.Filter(m.dependByTag[dependency], func(it string) bool { return it != tag })
+			if len(m.dependByTag[dependency]) == 0 {
+				delete(m.dependByTag, dependency)
+			}
+		}
+		delete(m.outboundByTag, tag)
+	}
+	remainingCandidates := make(map[string]adapter.Outbound, len(candidateByTag))
+	for tag, candidate := range candidateByTag {
+		remainingCandidates[tag] = candidate
+	}
+	updatedOutbounds := make([]adapter.Outbound, 0, len(m.outbounds)-len(removeSet)+len(candidates))
+	for _, current := range m.outbounds {
+		if !removeSet[current.Tag()] {
+			updatedOutbounds = append(updatedOutbounds, current)
+			continue
+		}
+		if candidate := remainingCandidates[current.Tag()]; candidate != nil {
+			updatedOutbounds = append(updatedOutbounds, candidate)
+			delete(remainingCandidates, current.Tag())
+		}
+	}
+	for _, candidate := range candidates {
+		if remainingCandidates[candidate.Tag()] != nil {
+			updatedOutbounds = append(updatedOutbounds, candidate)
+		}
+		m.outboundByTag[candidate.Tag()] = candidate
+		for _, dependency := range candidate.Dependencies() {
+			m.dependByTag[dependency] = append(m.dependByTag[dependency], candidate.Tag())
+		}
+	}
+	m.outbounds = updatedOutbounds
+	if m.defaultOutbound != nil && removeSet[m.defaultOutbound.Tag()] {
+		m.defaultOutbound = candidateByTag[m.defaultOutbound.Tag()]
+	}
+	if candidate := candidateByTag[m.defaultTag]; candidate != nil {
+		m.defaultOutbound = candidate
+	}
+	if m.defaultOutbound == nil && len(m.outbounds) > 0 {
+		m.defaultOutbound = m.outbounds[0]
+	}
+	return oldOutbounds, nil
+}
+
 func (m *Manager) Remove(tag string) error {
 	m.access.Lock()
 	defer m.access.Unlock()
 	outbound, found := m.outboundByTag[tag]
 	if !found {
 		return os.ErrInvalid
+	}
+	dependBy := m.dependByTag[tag]
+	if len(dependBy) > 0 {
+		return E.New("outbound[", tag, "] is depended by ", strings.Join(dependBy, ", "))
 	}
 	delete(m.outboundByTag, tag)
 	index := common.Index(m.outbounds, func(it adapter.Outbound) bool {
@@ -237,10 +341,6 @@ func (m *Manager) Remove(tag string) error {
 		} else {
 			m.defaultOutbound = nil
 		}
-	}
-	dependBy := m.dependByTag[tag]
-	if len(dependBy) > 0 {
-		return E.New("outbound[", tag, "] is depended by ", strings.Join(dependBy, ", "))
 	}
 	dependencies := outbound.Dependencies()
 	for _, dependency := range dependencies {

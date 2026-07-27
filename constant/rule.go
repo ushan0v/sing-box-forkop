@@ -16,6 +16,9 @@ const (
 	RuleSetTypeRemote   = "remote"
 	RuleSetFormatSource = "source"
 	RuleSetFormatBinary = "binary"
+	RuleSetFormatText   = "text"
+	RuleSetFormatYAML   = "yaml"
+	RuleSetFormatAuto   = "auto"
 )
 
 const (

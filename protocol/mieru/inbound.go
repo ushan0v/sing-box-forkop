@@ -309,6 +309,9 @@ func buildMieruServerConfig(_ context.Context, options option.MieruInboundOption
 			UserHintIsMandatory: proto.Bool(true),
 		}
 	}
+	listenerFactory := &mieruListenerFactory{
+		listenAddress: options.ListenOptions.Listen.Build(netip.IPv4Unspecified()),
+	}
 	return &mieruserver.ServerConfig{
 		Config: &mierupb.ServerConfig{
 			PortBindings:     portBindings,
@@ -316,6 +319,8 @@ func buildMieruServerConfig(_ context.Context, options option.MieruInboundOption
 			TrafficPattern:   trafficPattern,
 			AdvancedSettings: advancedSettings,
 		},
+		StreamListenerFactory: listenerFactory,
+		PacketListenerFactory: listenerFactory,
 	}, userNames, nil
 }
 

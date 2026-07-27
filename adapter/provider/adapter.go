@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -13,6 +12,8 @@ import (
 	"github.com/sagernet/sing-box/common/urltest"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
+	linkParser "github.com/sagernet/sing-box/parser/link"
+	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/batch"
 	E "github.com/sagernet/sing/common/exceptions"
 	F "github.com/sagernet/sing/common/format"
@@ -30,17 +31,21 @@ type Adapter struct {
 	providerTag    string
 	outbounds      []adapter.Outbound
 	outboundsByTag map[string]adapter.Outbound
+	outboundLinks  []string
+	access         sync.RWMutex
 	ticker         *time.Ticker
 	checking       atomic.Bool
 	history        adapter.URLTestHistoryStorage
 	callbackAccess sync.Mutex
 	callbacks      list.List[adapter.ProviderUpdateCallback]
 
-	link         string
-	enabled      bool
-	removeEmojis bool
-	timeout      time.Duration
-	interval     time.Duration
+	link           string
+	enabled        bool
+	removeEmojis   bool
+	tagPrefix      string
+	outboundDetour string
+	timeout        time.Duration
+	interval       time.Duration
 }
 
 func NewAdapter(ctx context.Context, router adapter.Router, outbound adapter.OutboundManager, logFactory log.Factory, logger log.ContextLogger, providerTag string, providerType string, options option.ProviderHealthCheckOptions) Adapter {
@@ -75,6 +80,14 @@ func (a *Adapter) SetRemoveEmojis(remove bool) {
 	a.removeEmojis = remove
 }
 
+func (a *Adapter) SetTagPrefix(prefix string) {
+	a.tagPrefix = prefix
+}
+
+func (a *Adapter) SetOutboundDetour(detour string) {
+	a.outboundDetour = detour
+}
+
 func (a *Adapter) Start() error {
 	a.history = service.FromContext[adapter.URLTestHistoryStorage](a.ctx)
 	if a.history == nil {
@@ -97,10 +110,14 @@ func (a *Adapter) Tag() string {
 }
 
 func (a *Adapter) Outbounds() []adapter.Outbound {
-	return a.outbounds
+	a.access.RLock()
+	defer a.access.RUnlock()
+	return append([]adapter.Outbound(nil), a.outbounds...)
 }
 
 func (a *Adapter) Outbound(tag string) (adapter.Outbound, bool) {
+	a.access.RLock()
+	defer a.access.RUnlock()
 	if a.outboundsByTag == nil {
 		return nil, false
 	}
@@ -108,53 +125,75 @@ func (a *Adapter) Outbound(tag string) (adapter.Outbound, bool) {
 	return detour, ok
 }
 
-func (a *Adapter) UpdateOutbounds(oldOpts []option.Outbound, newOpts []option.Outbound) {
-	if a.removeEmojis {
-		removeEmojisFromTags(newOpts)
-	}
-	uniquifyTags(newOpts)
-	a.removeUseless(newOpts)
-	var (
-		oldOptByTag    = make(map[string]option.Outbound)
-		outbounds      = make([]adapter.Outbound, 0, len(newOpts))
-		outboundsByTag = make(map[string]adapter.Outbound)
-	)
-	for _, opt := range oldOpts {
-		oldOptByTag[opt.Tag] = opt
-	}
-	for i, opt := range newOpts {
-		var tag string
-		if opt.Tag != "" {
-			tag = F.ToString(a.providerTag, "/", opt.Tag)
-		} else {
-			tag = F.ToString(a.providerTag, "/", i)
+func (a *Adapter) OutboundLink(tag string) (string, bool) {
+	a.access.RLock()
+	defer a.access.RUnlock()
+	for index, outbound := range a.outbounds {
+		if outbound.Tag() == tag && index < len(a.outboundLinks) && a.outboundLinks[index] != "" {
+			return a.outboundLinks[index], true
 		}
-		outbound, exist := a.outbound.Outbound(tag)
-		if !exist || !reflect.DeepEqual(opt, oldOptByTag[opt.Tag]) {
-			err := a.outbound.Create(
-				adapter.WithContext(a.ctx, &adapter.InboundContext{
-					Outbound: tag,
-				}),
-				a.router,
-				a.logFactory.NewLogger(F.ToString("outbound/", opt.Type, "[", tag, "]")),
-				tag,
-				opt.Type,
-				opt.Options,
-			)
-			if err != nil {
-				a.logger.Warn(err, " in ", tag, ", skip create this outbound")
-				continue
-			}
-			outbound, _ = a.outbound.Outbound(tag)
+	}
+	return "", false
+}
+
+func (a *Adapter) UpdateOutbounds(oldOpts []option.Outbound, newOpts []option.Outbound) error {
+	oldOpts = FilterInvalidOutbounds(oldOpts, nil)
+	newOpts = FilterInvalidOutbounds(newOpts, nil)
+	oldOpts = cloneOutbounds(oldOpts)
+	newOpts = cloneOutbounds(newOpts)
+	normalizeOutboundTags(oldOpts, a.removeEmojis, a.tagPrefix)
+	normalizeOutboundTags(newOpts, a.removeEmojis, a.tagPrefix)
+	oldOutbounds, err := prepareOutbounds(a.providerTag, oldOpts, a.outboundDetour)
+	if err != nil {
+		return err
+	}
+	newOutbounds, err := prepareOutbounds(a.providerTag, newOpts, a.outboundDetour)
+	if err != nil {
+		return err
+	}
+	oldRuntimeOutbounds, err := a.replaceOutbounds(oldOutbounds, newOutbounds)
+	if err != nil {
+		restoreErr := a.publishOutbounds(oldOutbounds)
+		a.UpdateGroups()
+		return E.Errors(err, restoreErr)
+	}
+	if err = a.publishOutbounds(newOutbounds); err != nil {
+		return err
+	}
+	a.UpdateGroups()
+	for _, oldOutbound := range oldRuntimeOutbounds {
+		if err := common.Close(oldOutbound); err != nil {
+			a.logger.Error("close replaced provider outbound [", oldOutbound.Tag(), "]: ", err)
 		}
-		outbounds = append(outbounds, outbound)
-		outboundsByTag[tag] = outbound
 	}
 	if a.enabled && a.history != nil {
 		go a.HealthCheck(a.ctx)
 	}
+	return nil
+}
+
+func (a *Adapter) publishOutbounds(preparedOutbounds []preparedOutbound) error {
+	var (
+		outbounds      = make([]adapter.Outbound, 0, len(preparedOutbounds))
+		outboundsByTag = make(map[string]adapter.Outbound)
+		outboundLinks  = make([]string, 0, len(preparedOutbounds))
+	)
+	for _, prepared := range sourceOrder(preparedOutbounds) {
+		outbound, loaded := a.outbound.Outbound(prepared.tag)
+		if !loaded {
+			return E.New("provider outbound not found after update: ", prepared.tag)
+		}
+		outbounds = append(outbounds, outbound)
+		outboundsByTag[prepared.tag] = outbound
+		link, _ := linkParser.GenerateSubscriptionLink(prepared.source)
+		outboundLinks = append(outboundLinks, link)
+	}
+	a.access.Lock()
 	a.outbounds = outbounds
 	a.outboundsByTag = outboundsByTag
+	a.outboundLinks = outboundLinks
+	a.access.Unlock()
+	return nil
 }
 
 func (a *Adapter) HealthCheck(ctx context.Context) (map[string]uint16, error) {
@@ -177,8 +216,16 @@ func (a *Adapter) UnregisterCallback(element *list.Element[adapter.ProviderUpdat
 }
 
 func (a *Adapter) UpdateGroups() {
+	a.callbackAccess.Lock()
+	var callbacks []adapter.ProviderUpdateCallback
 	for element := a.callbacks.Front(); element != nil; element = element.Next() {
-		element.Value(a.providerTag)
+		callbacks = append(callbacks, element.Value)
+	}
+	a.callbackAccess.Unlock()
+	for _, callback := range callbacks {
+		if err := callback(a.providerTag); err != nil {
+			a.logger.Error("update provider group: ", err)
+		}
 	}
 }
 
@@ -186,8 +233,12 @@ func (a *Adapter) Close() error {
 	if a.ticker != nil {
 		a.ticker.Stop()
 	}
+	a.access.Lock()
 	outbounds := a.outbounds
 	a.outbounds = nil
+	a.outboundsByTag = nil
+	a.outboundLinks = nil
+	a.access.Unlock()
 	var err error
 	for _, ob := range outbounds {
 		if err2 := a.outbound.Remove(ob.Tag()); err2 != nil {
@@ -224,7 +275,7 @@ func (a *Adapter) healthcheck(ctx context.Context) (map[string]uint16, error) {
 	b, _ := batch.New(ctx, batch.WithConcurrencyNum[any](10))
 	var resultAccess sync.Mutex
 	checked := make(map[string]bool)
-	for _, detour := range a.outbounds {
+	for _, detour := range a.Outbounds() {
 		tag := detour.Tag()
 		if checked[tag] {
 			continue
@@ -254,46 +305,48 @@ func (a *Adapter) healthcheck(ctx context.Context) (map[string]uint16, error) {
 	return result, nil
 }
 
-func (a *Adapter) removeUseless(newOpts []option.Outbound) {
-	if len(a.outbounds) == 0 {
-		return
-	}
-	exists := make(map[string]bool)
-	for i, opt := range newOpts {
-		var tag string
-		if opt.Tag != "" {
-			tag = F.ToString(a.providerTag, "/", opt.Tag)
-		} else {
-			tag = F.ToString(a.providerTag, "/", i)
+func normalizeOutboundTags(opts []option.Outbound, removeEmojis bool, tagPrefix string) {
+	count := make(map[string]int)
+	tags := make(map[string]string)
+	for i, opt := range opts {
+		originalTag := opt.Tag
+		tag := originalTag
+		if removeEmojis {
+			tag = cleanOutboundTag(tag)
 		}
-		exists[tag] = true
-	}
-	for _, opt := range a.outbounds {
-		if !exists[opt.Tag()] {
-			if err := a.outbound.Remove(opt.Tag()); err != nil {
-				a.logger.Error(err, "close outbound [", opt.Tag(), "]")
+		if tag != "" {
+			tag = tagPrefix + tag
+		}
+		count[tag]++
+		if count[tag] > 1 {
+			tag = F.ToString(tag, " #", count[tag])
+		}
+		opts[i].Tag = tag
+		if originalTag != "" {
+			if _, exists := tags[originalTag]; !exists {
+				tags[originalTag] = tag
 			}
 		}
 	}
-}
-
-func uniquifyTags(opts []option.Outbound) {
-	count := make(map[string]int)
-	for i, opt := range opts {
-		count[opt.Tag]++
-		if count[opt.Tag] > 1 {
-			opts[i].Tag = F.ToString(opt.Tag, " #", count[opt.Tag])
-		}
+	for _, outbound := range opts {
+		rewriteOutboundReferences(outbound.Options, tags)
 	}
 }
 
-func removeEmojisFromTags(opts []option.Outbound) {
-	for i, opt := range opts {
-		cleaned := flagRegex.ReplaceAllStringFunc(opt.Tag, flagToCountryCode)
-		cleaned = emojiRegex.ReplaceAllString(cleaned, "")
-		cleaned = multiSpaceRegex.ReplaceAllString(cleaned, " ")
-		opts[i].Tag = strings.TrimSpace(cleaned)
+func cloneOutbounds(outbounds []option.Outbound) []option.Outbound {
+	cloned := make([]option.Outbound, len(outbounds))
+	for index, outbound := range outbounds {
+		cloned[index] = outbound
+		cloned[index].Options = cloneOptions(outbound.Options)
 	}
+	return cloned
+}
+
+func cleanOutboundTag(tag string) string {
+	cleaned := flagRegex.ReplaceAllStringFunc(tag, flagToCountryCode)
+	cleaned = emojiRegex.ReplaceAllString(cleaned, "")
+	cleaned = multiSpaceRegex.ReplaceAllString(cleaned, " ")
+	return strings.TrimSpace(cleaned)
 }
 
 func flagToCountryCode(flag string) string {

@@ -21,7 +21,7 @@ func StringToType[T any](str string) T {
 		if err != nil {
 			v.SetInt(StringToType[int64](str))
 		} else {
-			v.Set(reflect.ValueOf(d))
+			v.SetInt(int64(d))
 		}
 		return value
 	case badoption.HTTPHeader:

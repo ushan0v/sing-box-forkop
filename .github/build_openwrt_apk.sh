@@ -18,6 +18,13 @@ ARCHITECTURE="$1"
 VERSION="$2"
 BINARY_PATH="$3"
 OUTPUT_PATH="$4"
+PACKAGE_NAME="${5:-sing-box-extended}"
+PACKAGE_DESCRIPTION="${6:-The universal proxy platform (extended).}"
+PACKAGE_ORIGIN="${7:-sing-box-extended}"
+PACKAGE_URL="${8:-https://sing-box.sagernet.org/}"
+PACKAGE_MAINTAINER="${9:-nekohasekai <contact-git@sekai.icu>}"
+REPLACES="${10:-}"
+APK_INFO=()
 
 if [ -z "$ARCHITECTURE" ] || [ -z "$VERSION" ] || [ -z "$BINARY_PATH" ] || [ -z "$OUTPUT_PATH" ]; then
   echo "Usage: $0 <architecture> <version> <binary_path> <output_path>"
@@ -26,8 +33,13 @@ fi
 
 PROJECT=$(cd "$(dirname "$0")/.."; pwd)
 
-# Convert version to APK format:
-APK_VERSION=$(echo "$VERSION" | sed -E 's/-([a-z]+)\.([0-9]+)/_\1\2/' | sed -E 's/-[a-z]+-/./g')
+# APK only accepts a fixed set of textual suffixes. The Forkop package name
+# already identifies the flavor, so its package version keeps numeric parts.
+if [ "$PACKAGE_NAME" = "sing-box-extended" ]; then
+  APK_VERSION=$(echo "$VERSION" | sed -E 's/-([a-z]+)\.([0-9]+)/_\1\2/' | sed -E 's/-[a-z]+-/./g')
+else
+  APK_VERSION=$(echo "$VERSION" | sed -E 's/[^0-9]+/./g; s/^\.+//; s/\.+$//; s/\.+/./g')
+fi
 APK_VERSION="${APK_VERSION}-r0"
 
 ROOT_DIR=$(mktemp -d)
@@ -36,6 +48,10 @@ trap 'rm -rf "$ROOT_DIR" "$APK_ROOT_DIR"' EXIT
 
 # Binary
 install -Dm755 "$BINARY_PATH" "$ROOT_DIR/usr/bin/sing-box"
+if [ "$PACKAGE_NAME" = "sing-box-forkop" ] || [ "$PACKAGE_NAME" = "sing-box-forkop-compressed" ]; then
+  install -Dm644 /dev/null "$ROOT_DIR/usr/share/sing-box-forkop/version"
+  printf '%s\n' "$VERSION" > "$ROOT_DIR/usr/share/sing-box-forkop/version"
+fi
 
 # Config files
 install -Dm644 "$PROJECT/release/config/config.json" "$ROOT_DIR/etc/sing-box/config.json"
@@ -74,17 +90,21 @@ done < "$PACKAGES_DIR/.conffiles" > "$PACKAGES_DIR/.conffiles_static"
   | sort > "$PACKAGES_DIR/.list"
 
 # Build APK
+if [ -n "$REPLACES" ]; then
+  APK_INFO=(--info "replaces:${REPLACES}")
+fi
 apk --root "$APK_ROOT_DIR" mkpkg \
-  --info "name:sing-box-extended" \
+  --info "name:${PACKAGE_NAME}" \
   --info "version:${APK_VERSION}" \
-  --info "description:The universal proxy platform (extended)." \
+  --info "description:${PACKAGE_DESCRIPTION}" \
   --info "arch:${ARCHITECTURE}" \
   --info "license:GPL-3.0-or-later" \
-  --info "origin:sing-box-extended" \
-  --info "url:https://sing-box.sagernet.org/" \
-  --info "maintainer:nekohasekai <contact-git@sekai.icu>" \
+  --info "origin:${PACKAGE_ORIGIN}" \
+  --info "url:${PACKAGE_URL}" \
+  --info "maintainer:${PACKAGE_MAINTAINER}" \
   --info "depends:ca-bundle kmod-inet-diag kmod-tun firewall4 kmod-nft-queue" \
   --info "provides:sing-box" \
+  "${APK_INFO[@]}" \
   --info "provider-priority:100" \
   --script "pre-deinstall:${PROJECT}/release/config/openwrt.prerm" \
   --files "$ROOT_DIR" \

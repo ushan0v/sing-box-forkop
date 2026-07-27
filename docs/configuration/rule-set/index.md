@@ -26,7 +26,7 @@
     {
       "type": "local",
       "tag": "",
-      "format": "source", // or binary
+      "format": "source", // or binary, text, yaml or auto
       "path": ""
     }
     ```
@@ -41,7 +41,7 @@
     {
       "type": "remote",
       "tag": "",
-      "format": "source", // or binary
+      "format": "source", // or binary, text, yaml or auto
       "url": "",
       "download_detour": "", // optional
       "update_interval": "" // optional
@@ -78,9 +78,13 @@ List of [Headless Rule](./headless-rule/).
 
 ==Required==
 
-Format of rule-set file, `source` or `binary`.
+Format of rule-set file: `source`, `binary`, `text`, `yaml` or `auto`.
 
-Optional when `path` or `url` uses `json` or `srs` as extension.
+The `text` format accepts one domain suffix, IP address or CIDR prefix per line. Empty lines, `#` comments and `//` comments are ignored.
+
+The `yaml` format accepts Clash/Mihomo rule-provider files with a top-level `payload` sequence. Domain, IP CIDR and classical domain/IP/port/process/network items that map directly to sing-box headless rules are supported; unsupported items reject the file instead of being ignored. `auto` detects SRS binary, sing-box source JSON, Clash/Mihomo YAML and text content without relying on the file extension.
+
+Optional when `path` or `url` uses `json`, `srs`, `txt`, `yaml` or `yml` as extension.
 
 ### Local Fields
 

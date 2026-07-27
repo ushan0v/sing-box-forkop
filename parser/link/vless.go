@@ -51,6 +51,10 @@ func parseVLESSLink(link string) (option.Outbound, error) {
 				GRPCOptions: option.V2RayGRPCOptions{},
 			}
 			switch value {
+			case "kcp", "mkcp":
+				Transport.Type = C.V2RayTransportTypeKCP
+				Transport.KCPOptions.HeaderType = proxy["headerType"]
+				Transport.KCPOptions.Seed = proxy["seed"]
 			case "ws":
 				Transport.Type = C.V2RayTransportTypeWebsocket
 				Transport.WebsocketOptions = v2rayTransportWs(proxy["host"], proxy["path"])
@@ -69,10 +73,9 @@ func parseVLESSLink(link string) (option.Outbound, error) {
 				}
 			case "xhttp":
 				Transport.Type = C.V2RayTransportTypeXHTTP
-				if alpn, exists := proxy["alpn"]; exists && alpn != "" {
-					TLSOptions.ALPN = []string{alpn}
+				if len(TLSOptions.ALPN) == 0 {
+					TLSOptions.ALPN = []string{"h2", "http/1.1"}
 				}
-				TLSOptions.ALPN = []string{"h2", "http/1.1"}
 				if host, exists := proxy["host"]; exists && host != "" {
 					Transport.XHTTPOptions.Host = host
 				}
@@ -159,7 +162,7 @@ func parseVLESSLink(link string) (option.Outbound, error) {
 			if value == "1" || value == "true" {
 				TLSOptions.Insecure = true
 			}
-		case "serviceName", "sni", "peer":
+		case "sni", "peer":
 			TLSOptions.ServerName = value
 		case "alpn":
 			TLSOptions.ALPN = strings.Split(value, ",")
@@ -170,6 +173,10 @@ func parseVLESSLink(link string) (option.Outbound, error) {
 			if value == "xtls-rprx-vision" {
 				options.Flow = "xtls-rprx-vision"
 			}
+		case "encryption":
+			options.Encryption = value
+		case "packetEncoding", "packet_encoding":
+			options.PacketEncoding = &value
 		case "pbk":
 			TLSOptions.Reality.PublicKey = value
 		case "sid":

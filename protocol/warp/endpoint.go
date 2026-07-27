@@ -3,10 +3,12 @@ package warp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math/rand"
 	"net"
 	"net/netip"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -35,11 +37,16 @@ type Endpoint struct {
 	options      option.WARPEndpointOptions
 	endpoint     adapter.Endpoint
 	startHandler func()
+	startOnce    sync.Once
+	closeOnce    sync.Once
+	closeErr     error
+	cancel       context.CancelFunc
 
 	await chan struct{}
 }
 
 func NewEndpoint(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.WARPEndpointOptions) (adapter.Endpoint, error) {
+	ctx, cancel := context.WithCancel(ctx)
 	var dependencies []string
 	if options.Detour != "" {
 		dependencies = append(dependencies, options.Detour)
@@ -50,6 +57,7 @@ func NewEndpoint(ctx context.Context, router adapter.Router, logger log.ContextL
 	endpoint := &Endpoint{
 		Adapter: endpoint.NewAdapter(C.TypeWARP, tag, []string{N.NetworkTCP, N.NetworkUDP}, dependencies),
 		ctx:     ctx,
+		cancel:  cancel,
 		options: options,
 		await:   make(chan struct{}),
 	}
@@ -61,9 +69,15 @@ func NewEndpoint(ctx context.Context, router adapter.Router, logger log.ContextL
 		if !options.Profile.Recreate && cacheFile != nil && cacheFile.StoreWARPConfig() {
 			savedProfile := cacheFile.LoadWARPConfig(tag)
 			if savedProfile != nil {
-				if err = json.Unmarshal(savedProfile.Content, &config); err != nil {
-					logger.ErrorContext(ctx, err)
-					return
+				if unmarshalErr := json.Unmarshal(savedProfile.Content, &config); unmarshalErr != nil {
+					logger.WarnContext(ctx, "discarding unreadable cached WARP profile: ", unmarshalErr)
+					config = nil
+				} else if !cachedConfigMatchesProfile(config, options.Profile.PrivateKey) {
+					logger.WarnContext(ctx, "discarding cached WARP profile with a different private key")
+					config = nil
+				} else if validationErr := validateConfig(config); validationErr != nil {
+					logger.WarnContext(ctx, "discarding invalid cached WARP profile: ", validationErr)
+					config = nil
 				}
 			}
 		}
@@ -71,6 +85,10 @@ func NewEndpoint(ctx context.Context, router adapter.Router, logger log.ContextL
 			config, err = endpoint.createConfig()
 			if err != nil {
 				logger.ErrorContext(ctx, err)
+				return
+			}
+			if err = validateConfig(config); err != nil {
+				logger.ErrorContext(ctx, E.Cause(err, "invalid WARP profile"))
 				return
 			}
 			if cacheFile != nil && cacheFile.StoreWARPConfig() {
@@ -140,19 +158,66 @@ func NewEndpoint(ctx context.Context, router adapter.Router, logger log.ContextL
 	return endpoint, nil
 }
 
+func cachedConfigMatchesProfile(config *Config, privateKey string) bool {
+	return config != nil && (privateKey == "" || config.PrivateKey == privateKey)
+}
+
+func validateConfig(config *Config) error {
+	if config == nil {
+		return E.New("profile response is empty")
+	}
+	if _, err := wgtypes.ParseKey(config.PrivateKey); err != nil {
+		return E.Cause(err, "invalid private key")
+	}
+	v4, err := netip.ParseAddr(strings.TrimSpace(config.Interface.Addresses.V4))
+	if err != nil || !v4.Is4() {
+		return E.New("invalid IPv4 interface address")
+	}
+	v6, err := netip.ParseAddr(strings.TrimSpace(config.Interface.Addresses.V6))
+	if err != nil || !v6.Is6() {
+		return E.New("invalid IPv6 interface address")
+	}
+	if len(config.Peers) == 0 {
+		return E.New("profile has no peers")
+	}
+	peer := config.Peers[0]
+	if strings.TrimSpace(peer.PublicKey) == "" {
+		return E.New("profile peer has no public key")
+	}
+	if strings.TrimSpace(peer.Endpoint.Host) == "" {
+		return E.New("profile peer has no endpoint host")
+	}
+	if len(peer.Endpoint.Ports) == 0 {
+		return E.New("profile peer has no endpoint ports")
+	}
+	for _, port := range peer.Endpoint.Ports {
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("profile peer has invalid endpoint port %d", port)
+		}
+	}
+	return nil
+}
+
 func (w *Endpoint) Start(stage adapter.StartStage) error {
 	if stage != adapter.StartStatePostStart {
 		return nil
 	}
-	go w.startHandler()
+	w.startOnce.Do(func() {
+		go w.startHandler()
+	})
 	return nil
 }
 
 func (w *Endpoint) Close() error {
-	if err := w.isEndpointInitialized(w.ctx); err != nil {
-		return err
-	}
-	return common.Close(w.endpoint)
+	w.closeOnce.Do(func() {
+		w.cancel()
+		w.startOnce.Do(func() { close(w.await) })
+		<-w.await
+		if w.endpoint != nil {
+			w.closeErr = common.Close(w.endpoint)
+		}
+	})
+	return w.closeErr
 }
 
 func (w *Endpoint) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {

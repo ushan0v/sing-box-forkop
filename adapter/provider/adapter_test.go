@@ -3,8 +3,31 @@ package provider
 import (
 	"testing"
 
+	"github.com/sagernet/sing-box/adapter"
+	outboundAdapter "github.com/sagernet/sing-box/adapter/outbound"
+	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/option"
 )
+
+type linkTestOutbound struct {
+	adapter.Outbound
+	outboundAdapter.Adapter
+}
+
+func (o *linkTestOutbound) Type() string           { return o.Adapter.Type() }
+func (o *linkTestOutbound) Tag() string            { return o.Adapter.Tag() }
+func (o *linkTestOutbound) Network() []string      { return o.Adapter.Network() }
+func (o *linkTestOutbound) Dependencies() []string { return o.Adapter.Dependencies() }
+
+type linkTestOutboundManager struct {
+	adapter.OutboundManager
+	outbounds map[string]adapter.Outbound
+}
+
+func (m *linkTestOutboundManager) Outbound(tag string) (adapter.Outbound, bool) {
+	outbound, loaded := m.outbounds[tag]
+	return outbound, loaded
+}
 
 func TestFlagToCountryCodeAllFlags(t *testing.T) {
 	for first := 'A'; first <= 'Z'; first++ {
@@ -36,10 +59,53 @@ func TestRemoveEmojisFromTags(t *testing.T) {
 		{"Server 🇺🇸 Node", "Server US Node"},
 	}
 	for _, tt := range tests {
-		opts := []option.Outbound{{Tag: tt.input}}
-		removeEmojisFromTags(opts)
-		if opts[0].Tag != tt.expected {
-			t.Errorf("removeEmojisFromTags(%q) = %q, want %q", tt.input, opts[0].Tag, tt.expected)
+		actual := cleanOutboundTag(tt.input)
+		if actual != tt.expected {
+			t.Errorf("cleanOutboundTag(%q) = %q, want %q", tt.input, actual, tt.expected)
 		}
+	}
+}
+
+func TestProviderPublishesOnlyGeneratedOutboundLinks(t *testing.T) {
+	runtimeOutbound := &linkTestOutbound{Adapter: outboundAdapter.NewAdapter(C.TypeVLESS, "subscription/node", nil, nil)}
+	provider := &Adapter{outbound: &linkTestOutboundManager{outbounds: map[string]adapter.Outbound{
+		runtimeOutbound.Tag(): runtimeOutbound,
+	}}}
+	prepared := []preparedOutbound{
+		{
+			tag: "subscription/node",
+			source: option.Outbound{
+				Type: C.TypeVLESS,
+				Tag:  "node",
+				Options: &option.VLESSOutboundOptions{
+					ServerOptions: option.ServerOptions{Server: "example.com", ServerPort: 443},
+					UUID:          "00000000-0000-4000-8000-000000000001",
+				},
+			},
+		},
+	}
+	if err := provider.publishOutbounds(prepared); err != nil {
+		t.Fatal(err)
+	}
+	link, loaded := provider.OutboundLink(runtimeOutbound.Tag())
+	if !loaded || link != "vless://00000000-0000-4000-8000-000000000001@example.com:443?security=none&type=tcp#node" {
+		t.Fatalf("unexpected provider outbound link: loaded=%v link=%q", loaded, link)
+	}
+	if _, loaded = provider.OutboundLink("subscription/missing"); loaded {
+		t.Fatal("unexpected link for missing provider outbound")
+	}
+
+	unsupported := &linkTestOutbound{Adapter: outboundAdapter.NewAdapter(C.TypeSSH, "subscription/ssh", nil, nil)}
+	provider.outbound.(*linkTestOutboundManager).outbounds[unsupported.Tag()] = unsupported
+	if err := provider.publishOutbounds([]preparedOutbound{{
+		tag: unsupported.Tag(), source: option.Outbound{Type: C.TypeSSH, Tag: "ssh", Options: &option.SSHOutboundOptions{}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, loaded = provider.OutboundLink(unsupported.Tag()); loaded {
+		t.Fatal("unsupported outbound must not expose a lossy link")
+	}
+	if _, loaded = provider.OutboundLink(runtimeOutbound.Tag()); loaded {
+		t.Fatal("removed outbound link survived provider refresh")
 	}
 }

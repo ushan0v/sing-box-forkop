@@ -1,21 +1,17 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/sagernet/sing-box/adapter"
-	"github.com/sagernet/sing-box/common/srs"
+	convertor "github.com/sagernet/sing-box/common/convertor/ruleset"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
-	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/route/rule"
 	E "github.com/sagernet/sing/common/exceptions"
 	F "github.com/sagernet/sing/common/format"
-	"github.com/sagernet/sing/common/json"
 	M "github.com/sagernet/sing/common/metadata"
 
 	"github.com/spf13/cobra"
@@ -36,15 +32,13 @@ var commandRuleSetMatch = &cobra.Command{
 }
 
 func init() {
-	commandRuleSetMatch.Flags().StringVarP(&flagRuleSetMatchFormat, "format", "f", "source", "rule-set format")
+	commandRuleSetMatch.Flags().StringVarP(&flagRuleSetMatchFormat, "format", "f", "", "rule-set format")
 	commandRuleSet.AddCommand(commandRuleSetMatch)
 }
 
 func ruleSetMatch(sourcePath string, domain string) error {
-	var (
-		reader io.Reader
-		err    error
-	)
+	var reader *os.File
+	var err error
 	if sourcePath == "stdin" {
 		reader = os.Stdin
 	} else {
@@ -52,10 +46,7 @@ func ruleSetMatch(sourcePath string, domain string) error {
 		if err != nil {
 			return E.Cause(err, "read rule-set")
 		}
-	}
-	content, err := io.ReadAll(reader)
-	if err != nil {
-		return E.Cause(err, "read rule-set")
+		defer reader.Close()
 	}
 	if flagRuleSetMatchFormat == "" {
 		switch filepath.Ext(sourcePath) {
@@ -63,24 +54,16 @@ func ruleSetMatch(sourcePath string, domain string) error {
 			flagRuleSetMatchFormat = C.RuleSetFormatSource
 		case ".srs":
 			flagRuleSetMatchFormat = C.RuleSetFormatBinary
+		case ".txt":
+			flagRuleSetMatchFormat = C.RuleSetFormatText
+		case ".yaml", ".yml":
+			flagRuleSetMatchFormat = C.RuleSetFormatYAML
+		}
+		if flagRuleSetMatchFormat == "" {
+			flagRuleSetMatchFormat = C.RuleSetFormatAuto
 		}
 	}
-	var ruleSet option.PlainRuleSetCompat
-	switch flagRuleSetMatchFormat {
-	case C.RuleSetFormatSource:
-		ruleSet, err = json.UnmarshalExtended[option.PlainRuleSetCompat](content)
-		if err != nil {
-			return err
-		}
-	case C.RuleSetFormatBinary:
-		ruleSet, err = srs.Read(bytes.NewReader(content), false)
-		if err != nil {
-			return err
-		}
-	default:
-		return E.New("unknown rule-set format: ", flagRuleSetMatchFormat)
-	}
-	plainRuleSet, err := ruleSet.Upgrade()
+	plainRuleSet, _, err := convertor.Read(reader, flagRuleSetMatchFormat)
 	if err != nil {
 		return err
 	}

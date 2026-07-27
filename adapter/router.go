@@ -64,6 +64,45 @@ type RuleSet interface {
 
 type RuleSetUpdateCallback func(it RuleSet)
 
+type RuleSetProviderSnapshot struct {
+	Type      string
+	Format    string
+	UpdatedAt time.Time
+	Revision  uint64
+	IPCIDR    RuleSetIPCIDRExport
+}
+
+type RuleSetProvider interface {
+	ProviderSnapshot() RuleSetProviderSnapshot
+}
+
+type RuleSetUpdater interface {
+	Update() error
+}
+
+type RuleSetIPCIDRExport struct {
+	IPv4       []string               `json:"ipv4"`
+	IPv6       []string               `json:"ipv6"`
+	ScopedIPv4 []RuleSetIPCIDRScoped  `json:"scoped_ipv4"`
+	ScopedIPv6 []RuleSetIPCIDRScoped  `json:"scoped_ipv6"`
+	Skipped    []RuleSetIPCIDRSkipped `json:"skipped,omitempty"`
+}
+
+type RuleSetIPCIDRScoped struct {
+	Prefixes   []string           `json:"prefixes"`
+	PortRanges []RuleSetPortRange `json:"port_ranges"`
+}
+
+type RuleSetPortRange struct {
+	Start uint16 `json:"start"`
+	End   uint16 `json:"end"`
+}
+
+type RuleSetIPCIDRSkipped struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
+}
+
 type RuleSetMetadata struct {
 	ContainsProcessRule bool
 	ContainsWIFIRule    bool

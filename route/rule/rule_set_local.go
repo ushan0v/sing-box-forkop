@@ -7,16 +7,16 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/sagernet/fswatch"
 	"github.com/sagernet/sing-box/adapter"
-	"github.com/sagernet/sing-box/common/srs"
+	convertor "github.com/sagernet/sing-box/common/convertor/ruleset"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
 	F "github.com/sagernet/sing/common/format"
-	"github.com/sagernet/sing/common/json"
 	"github.com/sagernet/sing/common/logger"
 	"github.com/sagernet/sing/common/x/list"
 	"github.com/sagernet/sing/service/filemanager"
@@ -27,24 +27,29 @@ import (
 var _ adapter.RuleSet = (*LocalRuleSet)(nil)
 
 type LocalRuleSet struct {
-	ctx        context.Context
-	logger     logger.Logger
-	tag        string
-	access     sync.RWMutex
-	rules      []adapter.HeadlessRule
-	metadata   adapter.RuleSetMetadata
-	fileFormat string
-	watcher    *fswatch.Watcher
-	callbacks  list.List[adapter.RuleSetUpdateCallback]
-	refs       atomic.Int32
+	ctx          context.Context
+	logger       logger.Logger
+	tag          string
+	providerType string
+	access       sync.RWMutex
+	rules        []adapter.HeadlessRule
+	metadata     adapter.RuleSetMetadata
+	ipCIDRExport adapter.RuleSetIPCIDRExport
+	updatedAt    time.Time
+	revision     uint64
+	fileFormat   string
+	watcher      *fswatch.Watcher
+	callbacks    list.List[adapter.RuleSetUpdateCallback]
+	refs         atomic.Int32
 }
 
 func NewLocalRuleSet(ctx context.Context, logger logger.Logger, options option.RuleSet) (*LocalRuleSet, error) {
 	ruleSet := &LocalRuleSet{
-		ctx:        ctx,
-		logger:     logger,
-		tag:        options.Tag,
-		fileFormat: options.Format,
+		ctx:          ctx,
+		logger:       logger,
+		tag:          options.Tag,
+		providerType: options.Type,
+		fileFormat:   options.Format,
 	}
 	if options.Type == C.RuleSetTypeInline {
 		if len(options.InlineOptions.Rules) == 0 {
@@ -97,31 +102,12 @@ func (s *LocalRuleSet) StartContext(ctx context.Context, startContext *adapter.H
 }
 
 func (s *LocalRuleSet) reloadFile(path string) error {
-	var ruleSet option.PlainRuleSetCompat
-	switch s.fileFormat {
-	case C.RuleSetFormatSource, "":
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		ruleSet, err = json.UnmarshalExtended[option.PlainRuleSetCompat](content)
-		if err != nil {
-			return err
-		}
-
-	case C.RuleSetFormatBinary:
-		setFile, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		ruleSet, err = srs.Read(setFile, false)
-		if err != nil {
-			return err
-		}
-	default:
-		return E.New("unknown rule-set format: ", s.fileFormat)
+	setFile, err := os.Open(path)
+	if err != nil {
+		return err
 	}
-	plainRuleSet, err := ruleSet.Upgrade()
+	defer setFile.Close()
+	plainRuleSet, _, err := convertor.Read(setFile, s.fileFormat)
 	if err != nil {
 		return err
 	}
@@ -141,9 +127,13 @@ func (s *LocalRuleSet) reloadRules(headlessRules []option.HeadlessRule) error {
 	metadata.ContainsProcessRule = HasHeadlessRule(headlessRules, isProcessHeadlessRule)
 	metadata.ContainsWIFIRule = HasHeadlessRule(headlessRules, isWIFIHeadlessRule)
 	metadata.ContainsIPCIDRRule = HasHeadlessRule(headlessRules, isIPCIDRHeadlessRule)
+	ipCIDRExport := buildRuleSetIPCIDRExportIfPresent(headlessRules, metadata.ContainsIPCIDRRule)
 	s.access.Lock()
 	s.rules = rules
 	s.metadata = metadata
+	s.ipCIDRExport = ipCIDRExport
+	s.updatedAt = time.Now()
+	s.revision++
 	callbacks := s.callbacks.Array()
 	s.access.Unlock()
 	for _, callback := range callbacks {
@@ -160,6 +150,18 @@ func (s *LocalRuleSet) Metadata() adapter.RuleSetMetadata {
 	s.access.RLock()
 	defer s.access.RUnlock()
 	return s.metadata
+}
+
+func (s *LocalRuleSet) ProviderSnapshot() adapter.RuleSetProviderSnapshot {
+	s.access.RLock()
+	defer s.access.RUnlock()
+	return adapter.RuleSetProviderSnapshot{
+		Type:      s.providerType,
+		Format:    s.fileFormat,
+		UpdatedAt: s.updatedAt,
+		Revision:  s.revision,
+		IPCIDR:    s.ipCIDRExport,
+	}
 }
 
 func (s *LocalRuleSet) ExtractIPSet() []*netipx.IPSet {

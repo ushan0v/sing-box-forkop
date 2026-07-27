@@ -3,6 +3,7 @@ package singbox
 import (
 	"context"
 
+	providerAdapter "github.com/sagernet/sing-box/adapter/provider"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/option"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -11,7 +12,8 @@ import (
 )
 
 type _SingBoxDocument struct {
-	Outbounds []option.Outbound `json:"outbounds"`
+	Outbounds   []option.Outbound `json:"outbounds"`
+	InvalidTags map[string]bool   `json:"-"`
 }
 type SingBoxDocument _SingBoxDocument
 
@@ -25,25 +27,51 @@ func (o *SingBoxDocument) UnmarshalJSONContext(ctx context.Context, inputContent
 	if !ok {
 		return E.New("missing outbounds in sing-box configuration")
 	}
-	var outs badjson.JSONArray
-	for i, outbound := range outbounds.(badjson.JSONArray) {
-		typeVal, loaded := outbound.(*badjson.JSONObject).Get("type")
-		if !loaded {
-			return E.New("missing type in outbound[", i, "]")
-		}
-		switch typeVal.(string) {
-		case C.TypeDirect, C.TypeBlock, C.TypeDNS, C.TypeSelector, C.TypeURLTest:
+	rawOutbounds, ok := outbounds.(badjson.JSONArray)
+	if !ok {
+		return E.New("outbounds in sing-box configuration is not an array")
+	}
+	o.InvalidTags = make(map[string]bool)
+	for _, rawOutbound := range rawOutbounds {
+		outboundObject, ok := rawOutbound.(*badjson.JSONObject)
+		if !ok {
 			continue
-		default:
-			outs = append(outs, outbound)
 		}
+		discard := func() {
+			tagValue, loaded := outboundObject.Get("tag")
+			tag, valid := tagValue.(string)
+			if loaded && valid && tag != "" {
+				o.InvalidTags[tag] = true
+			}
+		}
+		typeValue, loaded := outboundObject.Get("type")
+		if !loaded {
+			continue
+		}
+		outboundType, ok := typeValue.(string)
+		if !ok {
+			continue
+		}
+		switch outboundType {
+		case C.TypeDirect, C.TypeBlock, C.TypeDNS, C.TypeSelector, C.TypeURLTest, C.TypeFallback:
+			discard()
+			continue
+		}
+		outboundContent, err := outboundObject.MarshalJSONContext(ctx)
+		if err != nil {
+			discard()
+			continue
+		}
+		var outbound option.Outbound
+		err = json.UnmarshalContext(ctx, outboundContent, &outbound)
+		if err != nil {
+			discard()
+			continue
+		}
+		o.Outbounds = append(o.Outbounds, outbound)
 	}
-	content.Put("outbounds", outs)
-	inputContent, err = content.MarshalJSONContext(ctx)
-	if err != nil {
-		return err
-	}
-	return json.UnmarshalContext(ctx, inputContent, (*_SingBoxDocument)(o))
+	o.Outbounds = providerAdapter.FilterInvalidOutbounds(o.Outbounds, o.InvalidTags)
+	return nil
 }
 
 func ParseBoxSubscription(ctx context.Context, content string) ([]option.Outbound, error) {

@@ -3,9 +3,9 @@ package clash
 import (
 	"context"
 
+	providerAdapter "github.com/sagernet/sing-box/adapter/provider"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/option"
-	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
 
 	"gopkg.in/yaml.v3"
@@ -96,11 +96,31 @@ func ParseClashSubscription(_ context.Context, content string) ([]option.Outboun
 	if err != nil {
 		return nil, E.Cause(err, "parse clash config")
 	}
-	outbounds := common.FilterIsInstance(config.Proxies, func(proxy ClashProxy) (option.Outbound, bool) {
+	invalidTags := make(map[string]bool)
+	outbounds := make([]option.Outbound, 0, len(config.Proxies))
+	knownTags := make(map[string]bool, len(config.Proxies))
+	for _, proxy := range config.Proxies {
 		if proxy.SingType == "" {
-			return option.Outbound{}, false
+			if proxy.Name != "" {
+				invalidTags[proxy.Name] = true
+			}
+			continue
 		}
-		return proxy.Build(), true
-	})
-	return outbounds, nil
+		outbound := proxy.Build()
+		outbounds = append(outbounds, outbound)
+		if outbound.Tag != "" {
+			knownTags[outbound.Tag] = true
+		}
+	}
+	for _, outbound := range outbounds {
+		dialer, loaded := outbound.Options.(option.DialerOptionsWrapper)
+		if !loaded {
+			continue
+		}
+		detour := dialer.TakeDialerOptions().Detour
+		if detour != "" && !knownTags[detour] {
+			invalidTags[detour] = true
+		}
+	}
+	return providerAdapter.FilterInvalidOutbounds(outbounds, invalidTags), nil
 }

@@ -5,6 +5,7 @@ var (
 	CtxKeyProviderName = contextKey("provider name")
 	CtxKeyProxy        = contextKey("proxy")
 	CtxKeyProvider     = contextKey("provider")
+	CtxKeyRuleProvider = contextKey("rule provider")
 )
 
 type contextKey string

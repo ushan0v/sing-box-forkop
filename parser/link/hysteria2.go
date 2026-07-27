@@ -3,6 +3,7 @@ package link
 import (
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/sagernet/sing-box/common"
 	C "github.com/sagernet/sing-box/constant"
@@ -49,6 +50,10 @@ func parseHysteria2Link(link string) (option.Outbound, error) {
 			if value == "1" || value == "true" {
 				TLSOptions.Insecure = true
 			}
+		case "sni", "peer":
+			TLSOptions.ServerName = value
+		case "alpn":
+			TLSOptions.ALPN = strings.Split(value, ",")
 		}
 	}
 	outbound := option.Outbound{

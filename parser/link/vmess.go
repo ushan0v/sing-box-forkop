@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/sagernet/sing-box/common"
 	C "github.com/sagernet/sing-box/constant"
@@ -93,6 +94,10 @@ func parseVMessLink(link string) (option.Outbound, error) {
 		case "fp":
 			TLSOptions.UTLS.Enabled = true
 			TLSOptions.UTLS.Fingerprint = value
+		case "sni", "peer":
+			TLSOptions.ServerName = value
+		case "alpn":
+			TLSOptions.ALPN = strings.Split(value, ",")
 		case "net":
 			Transport := option.V2RayTransportOptions{
 				Type: "",
@@ -106,6 +111,16 @@ func parseVMessLink(link string) (option.Outbound, error) {
 				GRPCOptions: option.V2RayGRPCOptions{},
 			}
 			switch value {
+			case "kcp", "mkcp":
+				Transport.Type = C.V2RayTransportTypeKCP
+				Transport.KCPOptions.HeaderType = proxy["headerType"]
+				if Transport.KCPOptions.HeaderType == "" {
+					Transport.KCPOptions.HeaderType = proxy["type"]
+				}
+				Transport.KCPOptions.Seed = proxy["seed"]
+				if Transport.KCPOptions.Seed == "" {
+					Transport.KCPOptions.Seed = proxy["path"]
+				}
 			case "ws":
 				Transport.Type = C.V2RayTransportTypeWebsocket
 				Transport.WebsocketOptions = v2rayTransportWs(proxy["host"], proxy["path"])
@@ -151,6 +166,12 @@ func parseVMessLink(link string) (option.Outbound, error) {
 				options.TCPFastOpen = true
 			}
 		}
+	}
+	if serverName := proxy["sni"]; serverName != "" {
+		TLSOptions.ServerName = serverName
+	}
+	if alpn := proxy["alpn"]; alpn != "" {
+		TLSOptions.ALPN = strings.Split(alpn, ",")
 	}
 	if TLSOptions.Enabled {
 		options.TLS = &TLSOptions

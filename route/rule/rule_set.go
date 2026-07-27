@@ -45,7 +45,7 @@ func extractIPSetFromRule(rawRule adapter.HeadlessRule) []*netipx.IPSet {
 func HasHeadlessRule(rules []option.HeadlessRule, cond func(rule option.DefaultHeadlessRule) bool) bool {
 	for _, rule := range rules {
 		switch rule.Type {
-		case C.RuleTypeDefault:
+		case "", C.RuleTypeDefault:
 			if cond(rule.DefaultOptions) {
 				return true
 			}

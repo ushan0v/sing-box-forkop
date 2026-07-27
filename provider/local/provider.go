@@ -52,7 +52,11 @@ func NewProviderInline(ctx context.Context, router adapter.Router, logFactory lo
 		logger:  logger,
 	}
 	p.SetRemoveEmojis(options.RemoveEmojis)
-	p.UpdateOutbounds(nil, options.Outbounds)
+	p.SetTagPrefix(options.TagPrefix)
+	p.SetOutboundDetour(options.OutboundDetour)
+	if err := p.UpdateOutbounds(nil, options.Outbounds); err != nil {
+		return nil, err
+	}
 	return p, nil
 }
 
@@ -71,6 +75,8 @@ func NewProviderLocal(ctx context.Context, router adapter.Router, logFactory log
 		provider: service.FromContext[adapter.ProviderManager](ctx),
 	}
 	provider.SetRemoveEmojis(options.RemoveEmojis)
+	provider.SetTagPrefix(options.TagPrefix)
+	provider.SetOutboundDetour(options.OutboundDetour)
 	filePath := filemanager.BasePath(ctx, options.Path)
 	provider.path, _ = filepath.Abs(filePath)
 	watcher, err := fswatch.NewWatcher(fswatch.Options{
@@ -80,7 +86,6 @@ func NewProviderLocal(ctx context.Context, router adapter.Router, logFactory log
 			if uErr != nil {
 				logger.Error(E.Cause(uErr, "reload provider ", tag))
 			}
-			provider.UpdateGroups()
 		},
 	})
 	if err != nil {
@@ -91,11 +96,13 @@ func NewProviderLocal(ctx context.Context, router adapter.Router, logFactory log
 }
 
 func (s *ProviderLocal) Start() error {
-	err := s.reloadFile(s.path)
-	if err != nil {
-		return err
+	if s.path != "" {
+		if err := s.reloadFile(s.path); err != nil {
+			return err
+		}
+	} else {
+		s.UpdateGroups()
 	}
-	s.UpdateGroups()
 	if s.watcher != nil {
 		err := s.watcher.Start()
 		if err != nil {
@@ -121,7 +128,9 @@ func (s *ProviderLocal) reloadFile(path string) error {
 	if err != nil {
 		return err
 	}
-	s.UpdateOutbounds(s.lastOutOpts, outboundOpts)
+	if err := s.UpdateOutbounds(s.lastOutOpts, outboundOpts); err != nil {
+		return err
+	}
 	s.lastOutOpts = outboundOpts
 	return nil
 }

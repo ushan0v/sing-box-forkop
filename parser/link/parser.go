@@ -18,6 +18,8 @@ func ParseSubscriptionLink(link string) (option.Outbound, error) {
 
 	scheme := result[1]
 	switch scheme {
+	case "socks", "socks4", "socks4a", "socks5":
+		return parseSOCKSLink(link)
 	case "tuic":
 		return parseTuicLink(link)
 	case "trojan":

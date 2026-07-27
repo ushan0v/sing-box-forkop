@@ -18,8 +18,9 @@ type URLTestOutboundOptions struct {
 }
 
 type FallbackOutboundOptions struct {
-	Outbounds        []string           `json:"outbounds"`
-	BlacklistTimeout badoption.Duration `json:"blacklist_timeout,omitempty"`
+	GroupCommonOption
+	ExcludeGroupMembers badoption.Listable[string] `json:"exclude_group_members,omitempty"`
+	BlacklistTimeout    badoption.Duration         `json:"blacklist_timeout,omitempty"`
 }
 
 type GroupCommonOption struct {

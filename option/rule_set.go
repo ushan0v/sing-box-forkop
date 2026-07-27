@@ -92,7 +92,7 @@ func (r *RuleSet) UnmarshalJSON(bytes []byte) error {
 		switch r.Format {
 		case "":
 			return E.New("missing format")
-		case C.RuleSetFormatSource, C.RuleSetFormatBinary:
+		case C.RuleSetFormatSource, C.RuleSetFormatBinary, C.RuleSetFormatText, C.RuleSetFormatYAML, C.RuleSetFormatAuto:
 		default:
 			return E.New("unknown rule-set format: " + r.Format)
 		}
@@ -111,6 +111,10 @@ func ruleSetDefaultFormat(path string) string {
 		return C.RuleSetFormatSource
 	case ".srs":
 		return C.RuleSetFormatBinary
+	case ".txt":
+		return C.RuleSetFormatText
+	case ".yaml", ".yml":
+		return C.RuleSetFormatYAML
 	default:
 		return ""
 	}

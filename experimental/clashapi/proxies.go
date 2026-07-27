@@ -28,10 +28,37 @@ func proxyRouter(server *Server, router adapter.Router) http.Handler {
 	r.Route("/{name}", func(r chi.Router) {
 		r.Use(parseProxyName, findProxyByName(server))
 		r.Get("/", getProxy(server))
+		r.Get("/link", getProxyLink(server))
 		r.Get("/delay", getProxyDelay(server))
 		r.Put("/", updateProxy)
 	})
 	return r
+}
+
+func getProxyLink(server *Server) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if !isLocalControllerRequest(r) {
+			render.Status(r, http.StatusForbidden)
+			render.JSON(w, r, ErrForbidden)
+			return
+		}
+		tag := r.Context().Value(CtxKeyProxyName).(string)
+		for _, provider := range server.provider.Providers() {
+			source, loaded := provider.(adapter.ProviderOutboundLink)
+			if !loaded {
+				continue
+			}
+			link, loaded := source.OutboundLink(tag)
+			if !loaded {
+				continue
+			}
+			render.JSON(w, r, render.M{"url": link})
+			return
+		}
+		render.Status(r, http.StatusNotFound)
+		render.JSON(w, r, ErrNotFound)
+	}
 }
 
 func parseProxyName(next http.Handler) http.Handler {
@@ -199,7 +226,7 @@ func getProxyDelay(server *Server) func(w http.ResponseWriter, r *http.Request) 
 		}
 
 		proxy := r.Context().Value(CtxKeyProxy).(adapter.Outbound)
-		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(timeout))
+		ctx, cancel := context.WithTimeout(r.Context(), time.Millisecond*time.Duration(timeout))
 		defer cancel()
 
 		delay, err := urltest.URLTest(ctx, url, proxy)
