@@ -146,12 +146,17 @@ func (s *ProviderRemote) Start() error {
 	s.cacheFile = service.FromContext[adapter.CacheFile](s.ctx)
 	if s.cacheFile != nil {
 		if saveSub := s.cacheFile.LoadSubscription(s.Tag()); saveSub != nil {
-			content, info, metadata := decodeProviderCacheContent(string(saveSub.Content))
-			s.setSubscriptionData(info, metadata)
-			if err := s.updateProviderFromContent(content); err != nil {
-				return E.Cause(err, "restore cached outbound provider")
+			content, sourceHash, info, metadata := decodeProviderCacheContent(string(saveSub.Content))
+			restoreCache, currentSource := providerCacheSourceState(sourceHash, s.url)
+			if restoreCache {
+				s.setSubscriptionData(info, metadata)
+				if err := s.updateProviderFromContent(content); err != nil {
+					return E.Cause(err, "restore cached outbound provider")
+				}
+				if currentSource {
+					s.lastUpdated, s.lastEtag = saveSub.LastUpdated, saveSub.LastEtag
+				}
 			}
-			s.lastUpdated, s.lastEtag = saveSub.LastUpdated, saveSub.LastEtag
 		}
 	}
 	if s.downloadDetour != "" {
@@ -352,7 +357,7 @@ func (s *ProviderRemote) saveProviderCache() {
 		return
 	}
 	info, metadata := s.subscriptionData()
-	content = append([]byte(encodeProviderCacheMetadata(info, metadata)+"\n"), content...)
+	content = append([]byte(encodeProviderCacheMetadata(s.url, info, metadata)+"\n"), content...)
 	if err = s.cacheFile.SaveSubscription(s.Tag(), &adapter.SavedBinary{
 		LastUpdated: s.lastUpdated,
 		Content:     content,

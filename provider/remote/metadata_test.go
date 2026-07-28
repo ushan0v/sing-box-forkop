@@ -44,20 +44,41 @@ func TestPrepareSubscriptionContentMetadata(t *testing.T) {
 }
 
 func TestProviderCacheMetadataRoundTripAndLegacy(t *testing.T) {
+	source := "https://example.com/subscription?token=secret"
 	info := adapter.SubscriptionInfo{Upload: 1, Download: 2, Total: 3, Expire: 4}
 	metadata := adapter.SubscriptionMetadata{Title: "Example", SupportURL: "https://example.com/support"}
-	content := encodeProviderCacheMetadata(info, metadata) + "\n" + `{"outbounds":[]}`
-	decodedContent, decodedInfo, decodedMetadata := decodeProviderCacheContent(content)
-	if decodedContent != `{"outbounds":[]}` || decodedInfo != info || decodedMetadata != metadata {
-		t.Fatalf("cache metadata did not round-trip: content=%q info=%+v metadata=%+v", decodedContent, decodedInfo, decodedMetadata)
+	content := encodeProviderCacheMetadata(source, info, metadata) + "\n" + `{"outbounds":[]}`
+	decodedContent, sourceHash, decodedInfo, decodedMetadata := decodeProviderCacheContent(content)
+	if decodedContent != `{"outbounds":[]}` || sourceHash != providerCacheSourceHash(source) || decodedInfo != info || decodedMetadata != metadata {
+		t.Fatalf("cache metadata did not round-trip: content=%q source=%q info=%+v metadata=%+v", decodedContent, sourceHash, decodedInfo, decodedMetadata)
+	}
+	if sourceHash == providerCacheSourceHash("https://example.com/other") {
+		t.Fatal("cache source hash matched a different provider URL")
+	}
+	for _, testCase := range []struct {
+		name       string
+		sourceHash string
+		restore    bool
+		current    bool
+	}{
+		{"legacy", "", true, false},
+		{"current", sourceHash, true, true},
+		{"replaced", providerCacheSourceHash("https://example.com/other"), false, false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			restore, current := providerCacheSourceState(testCase.sourceHash, source)
+			if restore != testCase.restore || current != testCase.current {
+				t.Fatalf("unexpected cache source state: restore=%v current=%v", restore, current)
+			}
+		})
 	}
 
-	legacyContent, legacyInfo, legacyMetadata := decodeProviderCacheContent("upload=9; total=10\n" + `{"outbounds":[]}`)
-	if legacyContent != `{"outbounds":[]}` || legacyInfo.Upload != 9 || legacyInfo.Total != 10 || legacyMetadata != (adapter.SubscriptionMetadata{}) {
-		t.Fatalf("legacy provider cache was not restored: content=%q info=%+v metadata=%+v", legacyContent, legacyInfo, legacyMetadata)
+	legacyContent, legacySourceHash, legacyInfo, legacyMetadata := decodeProviderCacheContent("upload=9; total=10\n" + `{"outbounds":[]}`)
+	if legacyContent != `{"outbounds":[]}` || legacySourceHash != "" || legacyInfo.Upload != 9 || legacyInfo.Total != 10 || legacyMetadata != (adapter.SubscriptionMetadata{}) {
+		t.Fatalf("legacy provider cache was not restored: content=%q source=%q info=%+v metadata=%+v", legacyContent, legacySourceHash, legacyInfo, legacyMetadata)
 	}
 
-	invalidContent, _, _ := decodeProviderCacheContent(providerCacheMetadataPrefix + "invalid\n" + `{"outbounds":[]}`)
+	invalidContent, _, _, _ := decodeProviderCacheContent(providerCacheMetadataPrefix + "invalid\n" + `{"outbounds":[]}`)
 	if invalidContent != `{"outbounds":[]}` {
 		t.Fatalf("invalid cache metadata blocked outbound restore: %q", invalidContent)
 	}

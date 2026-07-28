@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
 	stdjson "encoding/json"
 	"mime"
@@ -28,9 +29,10 @@ var subscriptionMetadataKeys = []string{
 }
 
 type providerCacheMetadata struct {
-	Version  uint8                        `json:"version"`
-	Info     adapter.SubscriptionInfo     `json:"subscription_info"`
-	Metadata adapter.SubscriptionMetadata `json:"subscription_metadata"`
+	Version    uint8                        `json:"version"`
+	SourceHash string                       `json:"source_hash,omitempty"`
+	Info       adapter.SubscriptionInfo     `json:"subscription_info"`
+	Metadata   adapter.SubscriptionMetadata `json:"subscription_metadata"`
 }
 
 func prepareSubscriptionContent(rawContent string, headerValues map[string]string) (string, adapter.SubscriptionInfo, adapter.SubscriptionMetadata) {
@@ -256,12 +258,25 @@ func contentDispositionFileName(value string) string {
 	return strings.NewReplacer("/", "_", "\\", "_").Replace(fileName)
 }
 
-func encodeProviderCacheMetadata(info adapter.SubscriptionInfo, metadata adapter.SubscriptionMetadata) string {
-	content, _ := stdjson.Marshal(providerCacheMetadata{Version: 1, Info: info, Metadata: metadata})
+func providerCacheSourceHash(source string) string {
+	hash := sha256.Sum256([]byte(source))
+	return base64.RawURLEncoding.EncodeToString(hash[:])
+}
+
+func providerCacheSourceState(sourceHash string, source string) (restore bool, current bool) {
+	if sourceHash == "" {
+		return true, false
+	}
+	current = sourceHash == providerCacheSourceHash(source)
+	return current, current
+}
+
+func encodeProviderCacheMetadata(source string, info adapter.SubscriptionInfo, metadata adapter.SubscriptionMetadata) string {
+	content, _ := stdjson.Marshal(providerCacheMetadata{Version: 1, SourceHash: providerCacheSourceHash(source), Info: info, Metadata: metadata})
 	return providerCacheMetadataPrefix + base64.RawURLEncoding.EncodeToString(content)
 }
 
-func decodeProviderCacheContent(content string) (string, adapter.SubscriptionInfo, adapter.SubscriptionMetadata) {
+func decodeProviderCacheContent(content string) (string, string, adapter.SubscriptionInfo, adapter.SubscriptionMetadata) {
 	if !strings.HasPrefix(content, providerCacheMetadataPrefix) {
 		content, _ = boxCommon.DecodeBase64URLSafe(content)
 	}
@@ -272,14 +287,14 @@ func decodeProviderCacheContent(content string) (string, adapter.SubscriptionInf
 		if err == nil {
 			var cached providerCacheMetadata
 			if stdjson.Unmarshal(decoded, &cached) == nil && cached.Version == 1 {
-				return remaining, cached.Info, cached.Metadata
+				return remaining, cached.SourceHash, cached.Info, cached.Metadata
 			}
 		}
-		return remaining, adapter.SubscriptionInfo{}, adapter.SubscriptionMetadata{}
+		return remaining, "", adapter.SubscriptionInfo{}, adapter.SubscriptionMetadata{}
 	}
 	if info, loaded := parseInfo(strings.TrimSpace(firstLine)); loaded {
 		remaining, _ = boxCommon.DecodeBase64URLSafe(remaining)
-		return remaining, info, adapter.SubscriptionMetadata{}
+		return remaining, "", info, adapter.SubscriptionMetadata{}
 	}
-	return content, adapter.SubscriptionInfo{}, adapter.SubscriptionMetadata{}
+	return content, "", adapter.SubscriptionInfo{}, adapter.SubscriptionMetadata{}
 }
