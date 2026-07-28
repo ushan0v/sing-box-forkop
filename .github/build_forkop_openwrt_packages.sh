@@ -11,6 +11,12 @@ ARCHITECTURE="$2"
 BINARY_PATH="$3"
 PACKAGE_NAME="$4"
 REPLACED_PACKAGE="$5"
+PACKAGE_FORMAT="${FORKOP_PACKAGE_FORMAT:-all}"
+
+if [[ ! "$PACKAGE_FORMAT" =~ ^(all|ipk|apk)$ ]]; then
+  echo "FORKOP_PACKAGE_FORMAT must be all, ipk, or apk" >&2
+  exit 2
+fi
 
 PROJECT=$(cd "$(dirname "$0")/.." && pwd)
 DIST="$PROJECT/dist"
@@ -56,18 +62,21 @@ fi
 IPK_PATH="$DIST/${ASSET_NAME}.ipk"
 APK_PATH="$DIST/${ASSET_NAME}.apk"
 
-bash "$PROJECT/.github/deb2ipk.sh" "$ARCHITECTURE" "$TMP_DEB" "$IPK_PATH"
-bash "$PROJECT/.github/build_openwrt_apk.sh" \
-  "$ARCHITECTURE" \
-  "$VERSION" \
-  "$BINARY_PATH" \
-  "$APK_PATH" \
-  "$PACKAGE_NAME" \
-  "$DESCRIPTION" \
-  "$PACKAGE_NAME" \
-  "https://github.com/ushan0v/sing-box-forkop" \
-  "ushan0v" \
-  "sing-box sing-box-extended ${REPLACED_PACKAGE}"
-
-echo "Built: $(basename "$IPK_PATH")"
-echo "Built: $(basename "$APK_PATH")"
+if [ "$PACKAGE_FORMAT" != apk ]; then
+  bash "$PROJECT/.github/deb2ipk.sh" "$ARCHITECTURE" "$TMP_DEB" "$IPK_PATH"
+  echo "Built: $(basename "$IPK_PATH")"
+fi
+if [ "$PACKAGE_FORMAT" != ipk ]; then
+  bash "$PROJECT/.github/build_openwrt_apk.sh" \
+    "$ARCHITECTURE" \
+    "$VERSION" \
+    "$BINARY_PATH" \
+    "$APK_PATH" \
+    "$PACKAGE_NAME" \
+    "$DESCRIPTION" \
+    "$PACKAGE_NAME" \
+    "https://github.com/ushan0v/sing-box-forkop" \
+    "ushan0v" \
+    "sing-box sing-box-extended ${REPLACED_PACKAGE}"
+  echo "Built: $(basename "$APK_PATH")"
+fi

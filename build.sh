@@ -40,8 +40,10 @@ version_from_git() {
 }
 
 require_tools() {
-  local tool
-  for tool in go git npm fpm apk upx ar tar install sha256sum; do
+  local tool tools=(go git npm fpm ar tar install sha256sum)
+  [ "$PACKAGE_FORMAT" = ipk ] || tools+=(apk)
+  [ "$BUILD_COMPRESSED" = 0 ] || tools+=(upx)
+  for tool in "${tools[@]}"; do
     command -v "$tool" >/dev/null || {
       echo "Missing required tool: $tool" >&2
       exit 1
@@ -122,6 +124,9 @@ build_target() {
   local -a go_env
   unset GOAMD64 GO386 GOARM GOMIPS
   configure_target "$target"
+  if [ -n "${FORKOP_OPENWRT_ARCHITECTURE:-}" ]; then
+    OPENWRT_ARCHITECTURES="$FORKOP_OPENWRT_ARCHITECTURE"
+  fi
   load_naive_environment
 
   build_dir="$PROJECT/dist/build/$target"
@@ -149,16 +154,19 @@ build_target() {
   [ -z "${GOMIPS:-}" ] || go_env+=("GOMIPS=$GOMIPS")
   env "${go_env[@]}" go build -trimpath -tags "$tags" -ldflags "$ldflags" -o "$binary" ./cmd/sing-box
 
-  cp "$binary" "$compressed"
-  upx --best --lzma "$compressed"
-
+  if [ "$BUILD_COMPRESSED" = 1 ]; then
+    cp "$binary" "$compressed"
+    upx --best --lzma "$compressed"
+  fi
   for architecture in $OPENWRT_ARCHITECTURES; do
     bash "$PROJECT/.github/build_forkop_openwrt_packages.sh" \
       "$VERSION" "$architecture" "$binary" \
       sing-box-forkop sing-box-forkop-compressed
-    bash "$PROJECT/.github/build_forkop_openwrt_packages.sh" \
-      "$VERSION" "$architecture" "$compressed" \
-      sing-box-forkop-compressed sing-box-forkop
+    if [ "$BUILD_COMPRESSED" = 1 ]; then
+      bash "$PROJECT/.github/build_forkop_openwrt_packages.sh" \
+        "$VERSION" "$architecture" "$compressed" \
+        sing-box-forkop-compressed sing-box-forkop
+    fi
   done
 }
 
@@ -175,6 +183,8 @@ esac
 
 SELECTED_TARGET="${1:-all}"
 VERSION="${2:-$(version_from_git)}"
+BUILD_COMPRESSED="${FORKOP_BUILD_COMPRESSED:-1}"
+PACKAGE_FORMAT="${FORKOP_PACKAGE_FORMAT:-all}"
 if [ "$SELECTED_TARGET" != all ]; then
   case " ${TARGETS[*]} " in
     *" $SELECTED_TARGET "*) ;;
@@ -187,6 +197,14 @@ if [ "$SELECTED_TARGET" != all ]; then
 fi
 if [[ ! "$VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z._+~-]*$ ]]; then
   echo "Invalid version: $VERSION" >&2
+  exit 2
+fi
+if [[ ! "$BUILD_COMPRESSED" =~ ^[01]$ ]]; then
+  echo "FORKOP_BUILD_COMPRESSED must be 0 or 1" >&2
+  exit 2
+fi
+if [[ ! "$PACKAGE_FORMAT" =~ ^(all|ipk|apk)$ ]]; then
+  echo "FORKOP_PACKAGE_FORMAT must be all, ipk, or apk" >&2
   exit 2
 fi
 
