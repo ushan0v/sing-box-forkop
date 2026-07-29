@@ -309,6 +309,7 @@ type URLTestGroup struct {
 	tolerance                    uint16
 	idleTimeout                  time.Duration
 	history                      adapter.URLTestHistoryStorage
+	sharedHistory                adapter.URLTestHistoryStorage
 	checking                     chan struct{}
 	selectedOutboundTCP          adapter.Outbound
 	selectedOutboundUDP          adapter.Outbound
@@ -334,13 +335,13 @@ func NewURLTestGroup(ctx context.Context, outboundManager adapter.OutboundManage
 	if interval > idleTimeout {
 		return nil, E.New("interval must be less or equal than idle_timeout")
 	}
-	var history adapter.URLTestHistoryStorage
+	var sharedHistory adapter.URLTestHistoryStorage
 	if historyFromCtx := service.PtrFromContext[urltest.HistoryStorage](ctx); historyFromCtx != nil {
-		history = historyFromCtx
+		sharedHistory = historyFromCtx
 	} else if clashServer := service.FromContext[adapter.ClashServer](ctx); clashServer != nil {
-		history = clashServer.HistoryStorage()
+		sharedHistory = clashServer.HistoryStorage()
 	} else {
-		history = urltest.NewHistoryStorage()
+		sharedHistory = urltest.NewHistoryStorage()
 	}
 	return &URLTestGroup{
 		ctx:                          ctx,
@@ -351,13 +352,23 @@ func NewURLTestGroup(ctx context.Context, outboundManager adapter.OutboundManage
 		interval:                     interval,
 		tolerance:                    tolerance,
 		idleTimeout:                  idleTimeout,
-		history:                      history,
+		history:                      urltest.NewHistoryStorage(),
+		sharedHistory:                sharedHistory,
 		checking:                     make(chan struct{}, 1),
 		close:                        make(chan struct{}),
 		pause:                        service.FromContext[pause.Manager](ctx),
 		interruptGroup:               interrupt.NewGroup(),
 		interruptExternalConnections: interruptExternalConnections,
 	}, nil
+}
+
+func (g *URLTestGroup) deleteHistory(tag string) {
+	g.history.DeleteURLTestHistory(tag)
+}
+
+func (g *URLTestGroup) storeHistory(tag string, history *adapter.URLTestHistory) {
+	g.history.StoreURLTestHistory(tag, history)
+	g.sharedHistory.StoreURLTestHistory(tag, history)
 }
 
 func (g *URLTestGroup) PostStart() {
@@ -533,10 +544,10 @@ func (g *URLTestGroup) urlTestWithWait(ctx context.Context, force bool, wait boo
 			t, err := urltest.URLTest(testCtx, g.link, p)
 			if err != nil {
 				g.logger.Debug("outbound ", tag, " unavailable: ", err)
-				g.history.DeleteURLTestHistory(realTag)
+				g.deleteHistory(realTag)
 			} else {
 				g.logger.Debug("outbound ", tag, " available: ", t, "ms")
-				g.history.StoreURLTestHistory(realTag, &adapter.URLTestHistory{
+				g.storeHistory(realTag, &adapter.URLTestHistory{
 					Time:  time.Now(),
 					Delay: t,
 				})
