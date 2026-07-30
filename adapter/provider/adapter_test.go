@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -8,6 +9,21 @@ import (
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/option"
 )
+
+func TestNormalizeOutboundsForFilter(t *testing.T) {
+	provider := &Adapter{removeEmojis: true, tagPrefix: "Prefix "}
+	normalized := provider.NormalizeOutboundsForFilter([]option.Outbound{
+		{Tag: "🇺🇸 Node"},
+		{Tag: "🇺🇸 Node"},
+	})
+	var tags []string
+	for _, outbound := range normalized {
+		tags = append(tags, outbound.Tag)
+	}
+	if expected := []string{"US Node", "US Node #2"}; !reflect.DeepEqual(tags, expected) {
+		t.Fatalf("unexpected filter tags: %v", tags)
+	}
+}
 
 type linkTestOutbound struct {
 	adapter.Outbound

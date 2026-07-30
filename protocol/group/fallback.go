@@ -158,10 +158,11 @@ func (s *Fallback) onProviderUpdated(tag string) error {
 			provider := s.providers[providerTag]
 			for _, detour := range provider.Outbounds() {
 				tag := detour.Tag()
-				if s.exclude != nil && s.exclude.MatchString(tag) {
+				filterTag := providerOutboundFilterTag(providerTag, tag)
+				if s.exclude != nil && s.exclude.MatchString(filterTag) {
 					continue
 				}
-				if s.include != nil && !s.include.MatchString(tag) {
+				if s.include != nil && !s.include.MatchString(filterTag) {
 					continue
 				}
 				cache = append(cache, detour)

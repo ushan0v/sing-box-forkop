@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +22,10 @@ import (
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/service"
 )
+
+func providerOutboundFilterTag(providerTag, outboundTag string) string {
+	return strings.TrimPrefix(outboundTag, providerTag+"/")
+}
 
 func RegisterSelector(registry *outbound.Registry) {
 	outbound.Register[option.SelectorOutboundOptions](registry, C.TypeSelector, NewSelector)
@@ -258,10 +263,11 @@ func (s *Selector) onProviderUpdated(tag string) error {
 		provider := s.providers[providerTag]
 		for _, detour := range provider.Outbounds() {
 			tag := detour.Tag()
-			if s.exclude != nil && s.exclude.MatchString(tag) {
+			filterTag := providerOutboundFilterTag(providerTag, tag)
+			if s.exclude != nil && s.exclude.MatchString(filterTag) {
 				continue
 			}
-			if s.include != nil && !s.include.MatchString(tag) {
+			if s.include != nil && !s.include.MatchString(filterTag) {
 				continue
 			}
 			tags = append(tags, tag)

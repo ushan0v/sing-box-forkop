@@ -266,10 +266,11 @@ func (s *URLTest) onProviderUpdated(tag string) error {
 		var cache []adapter.Outbound
 		for _, detour := range provider.Outbounds() {
 			tag := detour.Tag()
-			if s.exclude != nil && s.exclude.MatchString(tag) {
+			filterTag := providerOutboundFilterTag(providerTag, tag)
+			if s.exclude != nil && s.exclude.MatchString(filterTag) {
 				continue
 			}
-			if s.include != nil && !s.include.MatchString(tag) {
+			if s.include != nil && !s.include.MatchString(filterTag) {
 				continue
 			}
 			tags = append(tags, tag)

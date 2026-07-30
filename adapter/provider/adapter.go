@@ -172,6 +172,12 @@ func (a *Adapter) UpdateOutbounds(oldOpts []option.Outbound, newOpts []option.Ou
 	return nil
 }
 
+func (a *Adapter) NormalizeOutboundsForFilter(opts []option.Outbound) []option.Outbound {
+	opts = cloneOutbounds(FilterInvalidOutbounds(opts, nil))
+	normalizeOutboundTags(opts, a.removeEmojis, "")
+	return opts
+}
+
 func (a *Adapter) publishOutbounds(preparedOutbounds []preparedOutbound) error {
 	var (
 		outbounds      = make([]adapter.Outbound, 0, len(preparedOutbounds))

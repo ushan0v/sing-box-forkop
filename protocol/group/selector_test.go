@@ -80,6 +80,12 @@ func newTestOutbound(tag string) *testSelectorOutbound {
 	return &testSelectorOutbound{Adapter: outboundAdapter.NewAdapter("test", tag, []string{"tcp", "udp"}, nil)}
 }
 
+func TestProviderOutboundFilterTag(t *testing.T) {
+	if actual := providerOutboundFilterTag("subscription", "subscription/Node #2"); actual != "Node #2" {
+		t.Fatalf("unexpected provider-local filter tag: %q", actual)
+	}
+}
+
 func TestExcludedGroupMembers(t *testing.T) {
 	nested := &testOutboundGroup{members: []string{"provider/d"}}
 	manager := &testOutboundManager{outbounds: map[string]adapter.Outbound{
