@@ -55,13 +55,13 @@ type ProviderLocalOptions struct {
 }
 
 type ProviderRemoteOptions struct {
-	URL            string                     `json:"url"`
-	UserAgent      badoption.Listable[string] `json:"user_agent,omitempty"`
-	Headers        badoption.HTTPHeader       `json:"headers,omitempty"`
-	DownloadDetour string                     `json:"download_detour,omitempty"`
-	TagPrefix      string                     `json:"tag_prefix,omitempty"`
-	OutboundDetour string                     `json:"outbound_detour,omitempty"`
-	UpdateInterval badoption.Duration         `json:"update_interval,omitempty"`
+	URL            string               `json:"url"`
+	UserAgent      string               `json:"user_agent,omitempty"`
+	Headers        badoption.HTTPHeader `json:"headers,omitempty"`
+	DownloadDetour string               `json:"download_detour,omitempty"`
+	TagPrefix      string               `json:"tag_prefix,omitempty"`
+	OutboundDetour string               `json:"outbound_detour,omitempty"`
+	UpdateInterval badoption.Duration   `json:"update_interval,omitempty"`
 
 	Exclude      *badoption.Regexp          `json:"exclude,omitempty"`
 	Include      *badoption.Regexp          `json:"include,omitempty"`

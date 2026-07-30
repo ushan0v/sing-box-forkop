@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"testing"
 	"time"
 
@@ -33,41 +32,9 @@ func TestNextProviderUpdateInterval(t *testing.T) {
 	}
 }
 
-func TestNormalizeUserAgents(t *testing.T) {
-	configured := []string{" happ ", "", "happ", "sing-box"}
-	expected := []string{"happ", "sing-box"}
-	if actual := normalizeUserAgents(configured); !reflect.DeepEqual(actual, expected) {
-		t.Fatalf("unexpected user agents: %v", actual)
-	}
-	if actual := preferredUserAgents(expected, "sing-box"); !reflect.DeepEqual(actual, []string{"sing-box", "happ"}) {
-		t.Fatalf("unexpected preferred order: %v", actual)
-	}
-}
-
-func TestProviderUserAgentAcceptsStringOrArray(t *testing.T) {
-	for _, testCase := range []struct {
-		name     string
-		content  string
-		expected []string
-	}{
-		{"string", `{"user_agent":"happ"}`, []string{"happ"}},
-		{"array", `{"user_agent":["happ","sing-box"]}`, []string{"happ", "sing-box"}},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			var options option.ProviderRemoteOptions
-			if err := json.Unmarshal([]byte(testCase.content), &options); err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual([]string(options.UserAgent), testCase.expected) {
-				t.Fatalf("unexpected user agents: %v", options.UserAgent)
-			}
-		})
-	}
-}
-
 func TestProviderTagPrefixOptions(t *testing.T) {
 	var remote option.ProviderRemoteOptions
-	if err := json.Unmarshal([]byte(`{"tag_prefix":"remote: "}`), &remote); err != nil {
+	if err := json.Unmarshal([]byte(`{"tag_prefix":"remote: ","user_agent":"sing-box"}`), &remote); err != nil {
 		t.Fatal(err)
 	}
 	var local option.ProviderLocalOptions
@@ -78,12 +45,12 @@ func TestProviderTagPrefixOptions(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"tag_prefix":"inline: "}`), &inline); err != nil {
 		t.Fatal(err)
 	}
-	if remote.TagPrefix != "remote: " || local.TagPrefix != "local: " || inline.TagPrefix != "inline: " {
-		t.Fatalf("unexpected provider tag prefixes: %q %q %q", remote.TagPrefix, local.TagPrefix, inline.TagPrefix)
+	if remote.TagPrefix != "remote: " || remote.UserAgent != "sing-box" || local.TagPrefix != "local: " || inline.TagPrefix != "inline: " {
+		t.Fatalf("unexpected provider options: %#v %q %q", remote, local.TagPrefix, inline.TagPrefix)
 	}
 }
 
-func TestFetchWithUserAgentHonorsDeadline(t *testing.T) {
+func TestFetchProviderHonorsDeadline(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
@@ -93,8 +60,8 @@ func TestFetchWithUserAgentHonorsDeadline(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	remote := &ProviderRemote{url: server.URL}
-	if _, err := remote.fetchWithUserAgent(ctx, server.Client(), "sing-box", false); !errors.Is(err, context.DeadlineExceeded) {
+	remote := &ProviderRemote{url: server.URL, userAgent: "sing-box"}
+	if _, err := remote.fetchProvider(ctx, server.Client()); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("stalled provider response was not canceled: %v", err)
 	}
 }

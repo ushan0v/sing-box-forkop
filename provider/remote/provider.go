@@ -58,8 +58,7 @@ type ProviderRemote struct {
 	updating         atomic.Bool
 
 	url            string
-	userAgents     []string
-	lastUserAgent  string
+	userAgent      string
 	downloadDetour string
 	updateInterval time.Duration
 	exclude        *regexp.Regexp
@@ -78,7 +77,10 @@ func NewProviderRemote(ctx context.Context, router adapter.Router, logFactory lo
 	if updateInterval < time.Minute {
 		updateInterval = time.Minute
 	}
-	userAgents := normalizeUserAgents(options.UserAgent)
+	userAgent := options.UserAgent
+	if userAgent == "" {
+		userAgent = "sing-box " + C.Version
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	outbound := service.FromContext[adapter.OutboundManager](ctx)
 	logger := logFactory.NewLogger(F.ToString("provider/remote", "[", tag, "]"))
@@ -93,7 +95,7 @@ func NewProviderRemote(ctx context.Context, router adapter.Router, logFactory lo
 		provider: service.FromContext[adapter.ProviderManager](ctx),
 
 		url:            options.URL,
-		userAgents:     userAgents,
+		userAgent:      userAgent,
 		downloadDetour: options.DownloadDetour,
 		headers:        options.Headers.Build(),
 		updateInterval: updateInterval,
@@ -104,42 +106,6 @@ func NewProviderRemote(ctx context.Context, router adapter.Router, logFactory lo
 	p.SetTagPrefix(options.TagPrefix)
 	p.SetOutboundDetour(options.OutboundDetour)
 	return p, nil
-}
-
-func normalizeUserAgents(configured []string) []string {
-	var result []string
-	seen := make(map[string]bool)
-	for _, userAgent := range configured {
-		userAgent = strings.TrimSpace(userAgent)
-		if userAgent == "" || seen[userAgent] {
-			continue
-		}
-		seen[userAgent] = true
-		result = append(result, userAgent)
-	}
-	if len(result) == 0 {
-		result = append(result, "sing-box "+C.Version)
-	}
-	return result
-}
-
-func preferredUserAgents(userAgents []string, preferred string) []string {
-	if preferred == "" || len(userAgents) < 2 || userAgents[0] == preferred {
-		return userAgents
-	}
-	result := make([]string, 0, len(userAgents))
-	for _, userAgent := range userAgents {
-		if userAgent == preferred {
-			result = append(result, userAgent)
-			break
-		}
-	}
-	for _, userAgent := range userAgents {
-		if userAgent != preferred {
-			result = append(result, userAgent)
-		}
-	}
-	return result
 }
 
 func (s *ProviderRemote) Start() error {
@@ -259,22 +225,16 @@ func (s *ProviderRemote) fetch(ctx context.Context) error {
 	}
 	client := &http.Client{Transport: transport}
 	defer transport.CloseIdleConnections()
-	var fetchErr error
-	for index, userAgent := range preferredUserAgents(s.userAgents, s.lastUserAgent) {
-		result, err := s.fetchWithUserAgent(ctx, client, userAgent, index == 0)
-		if err != nil {
-			fetchErr = E.Errors(fetchErr, E.Cause(err, "user-agent ", userAgent))
-			continue
-		}
-		s.lastUserAgent = userAgent
-		if result.notModified {
-			s.applyNotModified(result)
-			return nil
-		}
-		s.applyFetchedProvider(result)
+	result, err := s.fetchProvider(ctx, client)
+	if err != nil {
+		return err
+	}
+	if result.notModified {
+		s.applyNotModified(result)
 		return nil
 	}
-	return E.Cause(fetchErr, "all user-agent candidates failed")
+	s.applyFetchedProvider(result)
+	return nil
 }
 
 type providerFetchResult struct {
@@ -285,16 +245,16 @@ type providerFetchResult struct {
 	notModified    bool
 }
 
-func (s *ProviderRemote) fetchWithUserAgent(ctx context.Context, client *http.Client, userAgent string, useETag bool) (providerFetchResult, error) {
+func (s *ProviderRemote) fetchProvider(ctx context.Context, client *http.Client) (providerFetchResult, error) {
 	var result providerFetchResult
 	req, err := http.NewRequest(http.MethodGet, s.url, nil)
 	if err != nil {
 		return result, err
 	}
-	if useETag && s.lastEtag != "" {
+	if s.lastEtag != "" {
 		req.Header.Set("If-None-Match", s.lastEtag)
 	}
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("User-Agent", s.userAgent)
 	for name, values := range s.headers {
 		req.Header[name] = values
 	}
