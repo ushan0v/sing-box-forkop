@@ -402,10 +402,11 @@ func (s *ProviderRemote) updateProviderFromContent(content string) error {
 		return (s.exclude == nil || !s.exclude.MatchString(outbound.Tag)) &&
 			(s.include == nil || s.include.MatchString(outbound.Tag))
 	})
-	if err := s.UpdateOutbounds(s.lastOutOpts, outboundOpts); err != nil {
+	appliedOpts, err := s.UpdateOutbounds(outboundOpts)
+	if err != nil {
 		return err
 	}
-	s.lastOutOpts = outboundOpts
+	s.lastOutOpts = appliedOpts
 	return nil
 }
 

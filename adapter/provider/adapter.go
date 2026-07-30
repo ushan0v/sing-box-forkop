@@ -32,6 +32,7 @@ type Adapter struct {
 	outbounds      []adapter.Outbound
 	outboundsByTag map[string]adapter.Outbound
 	outboundLinks  []string
+	outboundOpts   []option.Outbound
 	access         sync.RWMutex
 	ticker         *time.Ticker
 	checking       atomic.Bool
@@ -136,29 +137,32 @@ func (a *Adapter) OutboundLink(tag string) (string, bool) {
 	return "", false
 }
 
-func (a *Adapter) UpdateOutbounds(oldOpts []option.Outbound, newOpts []option.Outbound) error {
-	oldOpts = FilterInvalidOutbounds(oldOpts, nil)
-	newOpts = FilterInvalidOutbounds(newOpts, nil)
-	oldOpts = cloneOutbounds(oldOpts)
-	newOpts = cloneOutbounds(newOpts)
-	normalizeOutboundTags(oldOpts, a.removeEmojis, a.tagPrefix)
+func (a *Adapter) UpdateOutbounds(newOpts []option.Outbound) ([]option.Outbound, error) {
+	sourceOpts := FilterInvalidOutbounds(newOpts, nil)
+	if len(newOpts) > 0 && len(sourceOpts) == 0 {
+		return nil, E.New("no usable provider outbounds")
+	}
+	a.access.RLock()
+	oldOpts := cloneOutbounds(a.outboundOpts)
+	a.access.RUnlock()
+	newOpts = cloneOutbounds(sourceOpts)
 	normalizeOutboundTags(newOpts, a.removeEmojis, a.tagPrefix)
 	oldOutbounds, err := prepareOutbounds(a.providerTag, oldOpts, a.outboundDetour)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	newOutbounds, err := prepareOutbounds(a.providerTag, newOpts, a.outboundDetour)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	oldRuntimeOutbounds, err := a.replaceOutbounds(oldOutbounds, newOutbounds)
+	oldRuntimeOutbounds, appliedOutbounds, err := a.replaceOutbounds(oldOutbounds, newOutbounds)
 	if err != nil {
 		restoreErr := a.publishOutbounds(oldOutbounds)
 		a.UpdateGroups()
-		return E.Errors(err, restoreErr)
+		return nil, E.Errors(err, restoreErr)
 	}
-	if err = a.publishOutbounds(newOutbounds); err != nil {
-		return err
+	if err = a.publishOutbounds(appliedOutbounds); err != nil {
+		return nil, err
 	}
 	a.UpdateGroups()
 	for _, oldOutbound := range oldRuntimeOutbounds {
@@ -169,7 +173,11 @@ func (a *Adapter) UpdateOutbounds(oldOpts []option.Outbound, newOpts []option.Ou
 	if a.enabled && a.history != nil {
 		go a.HealthCheck(a.ctx)
 	}
-	return nil
+	appliedOpts := make([]option.Outbound, 0, len(appliedOutbounds))
+	for _, outbound := range sourceOrder(appliedOutbounds) {
+		appliedOpts = append(appliedOpts, sourceOpts[outbound.position])
+	}
+	return appliedOpts, nil
 }
 
 func (a *Adapter) NormalizeOutboundsForFilter(opts []option.Outbound) []option.Outbound {
@@ -198,6 +206,10 @@ func (a *Adapter) publishOutbounds(preparedOutbounds []preparedOutbound) error {
 	a.outbounds = outbounds
 	a.outboundsByTag = outboundsByTag
 	a.outboundLinks = outboundLinks
+	a.outboundOpts = make([]option.Outbound, 0, len(preparedOutbounds))
+	for _, prepared := range sourceOrder(preparedOutbounds) {
+		a.outboundOpts = append(a.outboundOpts, prepared.source)
+	}
 	a.access.Unlock()
 	return nil
 }
@@ -244,6 +256,7 @@ func (a *Adapter) Close() error {
 	a.outbounds = nil
 	a.outboundsByTag = nil
 	a.outboundLinks = nil
+	a.outboundOpts = nil
 	a.access.Unlock()
 	var err error
 	for _, ob := range outbounds {

@@ -36,7 +36,6 @@ type ProviderLocal struct {
 	logger      log.ContextLogger
 	provider    adapter.ProviderManager
 	path        string
-	lastOutOpts []option.Outbound
 	lastUpdated time.Time
 	watcher     *fswatch.Watcher
 }
@@ -54,7 +53,7 @@ func NewProviderInline(ctx context.Context, router adapter.Router, logFactory lo
 	p.SetRemoveEmojis(options.RemoveEmojis)
 	p.SetTagPrefix(options.TagPrefix)
 	p.SetOutboundDetour(options.OutboundDetour)
-	if err := p.UpdateOutbounds(nil, options.Outbounds); err != nil {
+	if _, err := p.UpdateOutbounds(options.Outbounds); err != nil {
 		return nil, err
 	}
 	return p, nil
@@ -128,10 +127,9 @@ func (s *ProviderLocal) reloadFile(path string) error {
 	if err != nil {
 		return err
 	}
-	if err := s.UpdateOutbounds(s.lastOutOpts, outboundOpts); err != nil {
+	if _, err := s.UpdateOutbounds(outboundOpts); err != nil {
 		return err
 	}
-	s.lastOutOpts = outboundOpts
 	return nil
 }
 

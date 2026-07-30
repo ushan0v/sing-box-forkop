@@ -303,21 +303,22 @@ func (m *stagedOutboundManager) Outbound(tag string) (adapter.Outbound, bool) {
 	return m.OutboundManager.Outbound(tag)
 }
 
-func (a *Adapter) replaceOutbounds(oldOutbounds, newOutbounds []preparedOutbound) ([]adapter.Outbound, error) {
+func (a *Adapter) replaceOutbounds(oldOutbounds, newOutbounds []preparedOutbound) ([]adapter.Outbound, []preparedOutbound, error) {
 	if manager, loaded := a.outbound.(batchOutboundManager); loaded && manager.Started() {
 		return a.replaceStartedOutbounds(manager, oldOutbounds, newOutbounds)
 	}
-	return nil, a.replaceUnstartedOutbounds(oldOutbounds, newOutbounds)
+	applied, err := a.replaceUnstartedOutbounds(oldOutbounds, newOutbounds)
+	return nil, applied, err
 }
 
-func (a *Adapter) replaceStartedOutbounds(manager batchOutboundManager, oldOutbounds, newOutbounds []preparedOutbound) ([]adapter.Outbound, error) {
+func (a *Adapter) replaceStartedOutbounds(manager batchOutboundManager, oldOutbounds, newOutbounds []preparedOutbound) ([]adapter.Outbound, []preparedOutbound, error) {
 	affected := affectedOutbounds(oldOutbounds, newOutbounds)
 	expectedOld := make(map[string]adapter.Outbound)
 	for _, outbound := range oldOutbounds {
 		if affected[outbound.tag] {
 			current, loaded := a.outbound.Outbound(outbound.tag)
 			if !loaded {
-				return nil, E.New("provider outbound not found: ", outbound.tag)
+				return nil, nil, E.New("provider outbound not found: ", outbound.tag)
 			}
 			expectedOld[outbound.tag] = current
 		}
@@ -329,17 +330,35 @@ func (a *Adapter) replaceStartedOutbounds(manager batchOutboundManager, oldOutbo
 		}
 	}
 	if len(expectedOld)+len(candidatesToBuild) == 0 {
-		return nil, nil
+		return nil, newOutbounds, nil
 	}
 	registry := service.FromContext[adapter.OutboundRegistry](a.ctx)
 	if registry == nil {
-		return nil, E.New("missing outbound registry")
+		return nil, nil, E.New("missing outbound registry")
 	}
 	staged := &stagedOutboundManager{OutboundManager: a.outbound, candidates: make(map[string]adapter.Outbound)}
 	stagedCtx := service.ExtendContext(a.ctx)
 	stagedCtx = service.ContextWith[adapter.OutboundManager](stagedCtx, staged)
 	var candidates []adapter.Outbound
+	invalid := make(map[string]bool)
+	preparedByTag := make(map[string]preparedOutbound, len(candidatesToBuild))
 	for _, prepared := range candidatesToBuild {
+		var unavailableDependency string
+		for _, dependency := range prepared.dependencies {
+			if invalid[dependency] {
+				unavailableDependency = dependency
+				break
+			}
+			if _, loaded := staged.Outbound(dependency); !loaded {
+				unavailableDependency = dependency
+				break
+			}
+		}
+		if unavailableDependency != "" {
+			invalid[prepared.tag] = true
+			a.logger.Warn("skip provider outbound ", prepared.tag, ": dependency ", unavailableDependency, " is unavailable")
+			continue
+		}
 		candidate, err := registry.CreateOutbound(
 			adapter.WithContext(stagedCtx, &adapter.InboundContext{Outbound: prepared.tag}),
 			a.router,
@@ -349,24 +368,53 @@ func (a *Adapter) replaceStartedOutbounds(manager batchOutboundManager, oldOutbo
 			prepared.runtime.Options,
 		)
 		if err != nil {
-			closeOutboundsReverse(candidates)
-			return nil, E.Cause(err, "create provider outbound candidate ", prepared.tag)
+			invalid[prepared.tag] = true
+			a.logger.Warn("skip invalid provider outbound ", prepared.tag, ": ", err)
+			continue
 		}
 		candidates = append(candidates, candidate)
 		staged.candidates[prepared.tag] = candidate
+		preparedByTag[prepared.tag] = prepared
 	}
 	for _, stage := range adapter.ListStartStages {
 		for _, candidate := range candidates {
+			if invalid[candidate.Tag()] {
+				continue
+			}
+			for _, dependency := range preparedByTag[candidate.Tag()].dependencies {
+				if invalid[dependency] {
+					invalid[candidate.Tag()] = true
+					a.logger.Warn("skip provider outbound ", candidate.Tag(), ": dependency ", dependency, " is unavailable")
+					break
+				}
+			}
+			if invalid[candidate.Tag()] {
+				continue
+			}
 			if err := adapter.LegacyStart(candidate, stage); err != nil {
-				closeOutboundsReverse(candidates)
-				return nil, E.Cause(err, stage, " provider outbound candidate ", candidate.Tag())
+				invalid[candidate.Tag()] = true
+				a.logger.Warn("skip invalid provider outbound ", candidate.Tag(), ": ", err)
 			}
 		}
 	}
-	oldByTag, err := manager.SwapBatch(expectedOld, candidates)
+	validCandidates := common.Filter(candidates, func(candidate adapter.Outbound) bool {
+		return !invalid[candidate.Tag()]
+	})
+	invalidCandidates := common.Filter(candidates, func(candidate adapter.Outbound) bool {
+		return invalid[candidate.Tag()]
+	})
+	closeOutboundsReverse(invalidCandidates)
+	appliedOutbounds := common.Filter(newOutbounds, func(outbound preparedOutbound) bool {
+		return !invalid[outbound.tag]
+	})
+	if len(newOutbounds) > 0 && len(appliedOutbounds) == 0 {
+		closeOutboundsReverse(validCandidates)
+		return nil, nil, E.New("no usable provider outbounds")
+	}
+	oldByTag, err := manager.SwapBatch(expectedOld, validCandidates)
 	if err != nil {
-		closeOutboundsReverse(candidates)
-		return nil, err
+		closeOutboundsReverse(validCandidates)
+		return nil, nil, err
 	}
 	oldToClose := make([]adapter.Outbound, 0, len(oldByTag))
 	for index := len(oldOutbounds) - 1; index >= 0; index-- {
@@ -374,7 +422,7 @@ func (a *Adapter) replaceStartedOutbounds(manager batchOutboundManager, oldOutbo
 			oldToClose = append(oldToClose, oldOutbound)
 		}
 	}
-	return oldToClose, nil
+	return oldToClose, appliedOutbounds, nil
 }
 
 func closeOutboundsReverse(outbounds []adapter.Outbound) {
@@ -383,7 +431,7 @@ func closeOutboundsReverse(outbounds []adapter.Outbound) {
 	}
 }
 
-func (a *Adapter) replaceUnstartedOutbounds(oldOutbounds, newOutbounds []preparedOutbound) error {
+func (a *Adapter) replaceUnstartedOutbounds(oldOutbounds, newOutbounds []preparedOutbound) ([]preparedOutbound, error) {
 	affected := affectedOutbounds(oldOutbounds, newOutbounds)
 	removed := make(map[string]bool)
 	for index := len(oldOutbounds) - 1; index >= 0; index-- {
@@ -392,7 +440,7 @@ func (a *Adapter) replaceUnstartedOutbounds(oldOutbounds, newOutbounds []prepare
 			continue
 		}
 		if err := a.outbound.Remove(outbound.tag); err != nil {
-			return E.Errors(E.Cause(err, "remove provider outbound ", outbound.tag), a.restoreOutbounds(oldOutbounds, removed))
+			return nil, E.Errors(E.Cause(err, "remove provider outbound ", outbound.tag), a.restoreOutbounds(oldOutbounds, removed))
 		}
 		removed[outbound.tag] = true
 	}
@@ -402,16 +450,41 @@ func (a *Adapter) replaceUnstartedOutbounds(oldOutbounds, newOutbounds []prepare
 		oldByTag[outbound.tag] = outbound
 	}
 	var created []preparedOutbound
+	invalid := make(map[string]bool)
 	for _, outbound := range newOutbounds {
 		if _, existed := oldByTag[outbound.tag]; existed && !affected[outbound.tag] {
 			continue
 		}
+		var unavailableDependency string
+		for _, dependency := range outbound.dependencies {
+			if invalid[dependency] {
+				unavailableDependency = dependency
+				break
+			}
+			if _, loaded := a.outbound.Outbound(dependency); !loaded {
+				unavailableDependency = dependency
+				break
+			}
+		}
+		if unavailableDependency != "" {
+			invalid[outbound.tag] = true
+			a.logger.Warn("skip provider outbound ", outbound.tag, ": dependency ", unavailableDependency, " is unavailable")
+			continue
+		}
 		if err := a.createOutbound(outbound); err != nil {
-			return E.Errors(E.Cause(err, "create provider outbound ", outbound.tag), a.rollbackOutbounds(created, oldOutbounds, removed))
+			invalid[outbound.tag] = true
+			a.logger.Warn("skip invalid provider outbound ", outbound.tag, ": ", err)
+			continue
 		}
 		created = append(created, outbound)
 	}
-	return nil
+	appliedOutbounds := common.Filter(newOutbounds, func(outbound preparedOutbound) bool {
+		return !invalid[outbound.tag]
+	})
+	if len(newOutbounds) > 0 && len(appliedOutbounds) == 0 {
+		return nil, E.Errors(E.New("no usable provider outbounds"), a.rollbackOutbounds(created, oldOutbounds, removed))
+	}
+	return appliedOutbounds, nil
 }
 
 func (a *Adapter) createOutbound(outbound preparedOutbound) error {

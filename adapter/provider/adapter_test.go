@@ -1,13 +1,17 @@
 package provider
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"testing"
 
 	"github.com/sagernet/sing-box/adapter"
 	outboundAdapter "github.com/sagernet/sing-box/adapter/outbound"
 	C "github.com/sagernet/sing-box/constant"
+	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing/service"
 )
 
 func TestNormalizeOutboundsForFilter(t *testing.T) {
@@ -43,6 +47,75 @@ type linkTestOutboundManager struct {
 func (m *linkTestOutboundManager) Outbound(tag string) (adapter.Outbound, bool) {
 	outbound, loaded := m.outbounds[tag]
 	return outbound, loaded
+}
+
+type filteringTestOutboundManager struct {
+	adapter.OutboundManager
+	outbounds map[string]adapter.Outbound
+}
+
+func (m *filteringTestOutboundManager) Outbound(tag string) (adapter.Outbound, bool) {
+	outbound, loaded := m.outbounds[tag]
+	return outbound, loaded
+}
+
+func (m *filteringTestOutboundManager) Started() bool {
+	return true
+}
+
+func (m *filteringTestOutboundManager) SwapBatch(expectedOld map[string]adapter.Outbound, candidates []adapter.Outbound) (map[string]adapter.Outbound, error) {
+	old := make(map[string]adapter.Outbound, len(expectedOld))
+	for tag, expected := range expectedOld {
+		if m.outbounds[tag] != expected {
+			return nil, errors.New("unexpected old outbound")
+		}
+		old[tag] = expected
+		delete(m.outbounds, tag)
+	}
+	for _, candidate := range candidates {
+		m.outbounds[candidate.Tag()] = candidate
+	}
+	return old, nil
+}
+
+func TestProviderSkipsInvalidOutboundsAndKeepsAtomicFallback(t *testing.T) {
+	registry := outboundAdapter.NewRegistry()
+	outboundAdapter.Register[option.VLESSOutboundOptions](registry, "valid", func(_ context.Context, _ adapter.Router, _ log.ContextLogger, tag string, _ option.VLESSOutboundOptions) (adapter.Outbound, error) {
+		return &linkTestOutbound{Adapter: outboundAdapter.NewAdapter("valid", tag, nil, nil)}, nil
+	})
+	outboundAdapter.Register[option.VLESSOutboundOptions](registry, "invalid", func(_ context.Context, _ adapter.Router, _ log.ContextLogger, _ string, _ option.VLESSOutboundOptions) (adapter.Outbound, error) {
+		return nil, errors.New("invalid test outbound")
+	})
+	ctx := service.ContextWith[adapter.OutboundRegistry](context.Background(), registry)
+	manager := &filteringTestOutboundManager{outbounds: make(map[string]adapter.Outbound)}
+	logFactory := log.NewNOPFactory()
+	provider := &Adapter{
+		ctx:         ctx,
+		outbound:    manager,
+		logFactory:  logFactory,
+		logger:      logFactory.NewLogger("test"),
+		providerTag: "subscription",
+	}
+	applied, err := provider.UpdateOutbounds([]option.Outbound{
+		{Type: "valid", Tag: "working", Options: &option.VLESSOutboundOptions{}},
+		{Type: "invalid", Tag: "broken", Options: &option.VLESSOutboundOptions{}},
+		{Type: "valid", Tag: "dependent", Options: &option.VLESSOutboundOptions{DialerOptions: option.DialerOptions{Detour: "broken"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(applied) != 1 || applied[0].Tag != "working" || len(provider.Outbounds()) != 1 {
+		t.Fatalf("invalid provider nodes were not isolated: applied=%v runtime=%v", applied, provider.Outbounds())
+	}
+	working := provider.Outbounds()[0]
+	if _, err = provider.UpdateOutbounds([]option.Outbound{
+		{Type: "invalid", Tag: "broken", Options: &option.VLESSOutboundOptions{}},
+	}); err == nil {
+		t.Fatal("provider with no usable outbounds must fail")
+	}
+	if current, loaded := manager.Outbound(working.Tag()); !loaded || current != working {
+		t.Fatal("failed provider refresh replaced the last working state")
+	}
 }
 
 func TestFlagToCountryCodeAllFlags(t *testing.T) {
