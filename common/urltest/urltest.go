@@ -127,7 +127,7 @@ func URLTest(ctx context.Context, link string, detour N.Dialer) (t uint16, err e
 	resp.Body.Close()
 	if IsUnifiedDelayFromContext(ctx) {
 		second := time.Now()
-		resp, err = client.Do(req)
+		resp, err = client.Do(req.WithContext(ctx))
 		if err != nil {
 			return
 		}

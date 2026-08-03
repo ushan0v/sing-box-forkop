@@ -19,8 +19,17 @@ type URLTestOutboundOptions struct {
 
 type FallbackOutboundOptions struct {
 	GroupCommonOption
-	ExcludeGroupMembers badoption.Listable[string] `json:"exclude_group_members,omitempty"`
-	BlacklistTimeout    badoption.Duration         `json:"blacklist_timeout,omitempty"`
+	Levels                    []FallbackLevelOptions `json:"levels,omitempty"`
+	URL                       string                 `json:"url,omitempty"`
+	Interval                  badoption.Duration     `json:"interval,omitempty"`
+	Timeout                   badoption.Duration     `json:"timeout,omitempty"`
+	IdleTimeout               badoption.Duration     `json:"idle_timeout,omitempty"`
+	InterruptExistConnections bool                   `json:"interrupt_exist_connections,omitempty"`
+}
+
+type FallbackLevelOptions struct {
+	GroupCommonOption
+	Tag string `json:"tag,omitempty"`
 }
 
 type GroupCommonOption struct {

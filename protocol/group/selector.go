@@ -282,34 +282,6 @@ func (s *Selector) onProviderUpdated(tag string) error {
 	return err
 }
 
-func excludedGroupMembers(manager adapter.OutboundManager, groupTags []string) map[string]bool {
-	excluded := make(map[string]bool)
-	visited := make(map[string]bool)
-	var visit func(string)
-	visit = func(groupTag string) {
-		if visited[groupTag] {
-			return
-		}
-		visited[groupTag] = true
-		outbound, loaded := manager.Outbound(groupTag)
-		if !loaded {
-			return
-		}
-		group, loaded := outbound.(adapter.OutboundGroup)
-		if !loaded {
-			return
-		}
-		for _, tag := range group.All() {
-			excluded[tag] = true
-			visit(tag)
-		}
-	}
-	for _, groupTag := range groupTags {
-		visit(groupTag)
-	}
-	return excluded
-}
-
 func (s *Selector) outboundSelect() (adapter.Outbound, error) {
 	if len(s.tags) == 0 {
 		return nil, nil

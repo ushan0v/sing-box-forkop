@@ -56,14 +56,6 @@ func (m *testOutboundManager) Outbound(tag string) (adapter.Outbound, bool) {
 	return outbound, loaded
 }
 
-type testOutboundGroup struct {
-	adapter.Outbound
-	members []string
-}
-
-func (g *testOutboundGroup) Now() string   { return "" }
-func (g *testOutboundGroup) All() []string { return append([]string(nil), g.members...) }
-
 type testProvider struct {
 	adapter.Provider
 	tag       string
@@ -83,24 +75,6 @@ func newTestOutbound(tag string) *testSelectorOutbound {
 func TestProviderOutboundFilterTag(t *testing.T) {
 	if actual := providerOutboundFilterTag("subscription", "subscription/Node #2"); actual != "Node #2" {
 		t.Fatalf("unexpected provider-local filter tag: %q", actual)
-	}
-}
-
-func TestExcludedGroupMembers(t *testing.T) {
-	nested := &testOutboundGroup{members: []string{"provider/d"}}
-	manager := &testOutboundManager{outbounds: map[string]adapter.Outbound{
-		"urltest":  &testOutboundGroup{members: []string{"provider/a", "provider/b", "nested"}},
-		"fallback": &testOutboundGroup{members: []string{"provider/b", "provider/c"}},
-		"nested":   nested,
-	}}
-	excluded := excludedGroupMembers(manager, []string{"urltest", "missing", "fallback"})
-	for _, tag := range []string{"provider/a", "provider/b", "provider/c", "provider/d", "nested"} {
-		if !excluded[tag] {
-			t.Fatalf("member %q was not excluded", tag)
-		}
-	}
-	if excluded["provider/e"] {
-		t.Fatal("unrelated member was excluded")
 	}
 }
 
@@ -235,76 +209,4 @@ func TestURLTestProviderRefreshDoesNotWaitForHealthChecks(t *testing.T) {
 		t.Fatal("new provider refresh was lost while a previous URL test was running")
 	}
 	urlTest.cancel()
-}
-
-func TestFallbackExcludesCurrentRecursiveGroupMembers(t *testing.T) {
-	compatible := newTestOutbound("Compatible")
-	nodeA := newTestOutbound("provider/a")
-	nodeB := newTestOutbound("provider/b")
-	nested := &testOutboundGroup{Outbound: newTestOutbound("nested"), members: []string{nodeA.Tag()}}
-	higher := &testOutboundGroup{Outbound: newTestOutbound("higher"), members: []string{nested.Tag()}}
-	manager := &testOutboundManager{outbounds: map[string]adapter.Outbound{
-		compatible.Tag(): compatible,
-		nodeA.Tag():      nodeA,
-		nodeB.Tag():      nodeB,
-		nested.Tag():     nested,
-		higher.Tag():     higher,
-	}}
-	provider := &testProvider{tag: "provider", outbounds: []adapter.Outbound{nodeA, nodeB}}
-	fallback := &Fallback{
-		Adapter:             outboundAdapter.NewAdapter(C.TypeFallback, "fallback", []string{"tcp", "udp"}, []string{higher.Tag()}),
-		outbound:            manager,
-		excludeGroupMembers: []string{higher.Tag()},
-		outbounds:           make(map[string]adapter.Outbound),
-		providers:           map[string]adapter.Provider{provider.Tag(): provider},
-		outboundsCache:      make(map[string][]adapter.Outbound),
-		providerTags:        []string{provider.Tag()},
-	}
-	if err := fallback.onProviderUpdated(provider.Tag()); err != nil {
-		t.Fatal(err)
-	}
-	if all := fallback.All(); len(all) != 1 || all[0] != nodeB.Tag() {
-		t.Fatalf("fallback did not keep only remaining provider nodes: %v", all)
-	}
-
-	nested.members = append(nested.members, nodeB.Tag())
-	if err := fallback.onProviderUpdated(provider.Tag()); err != nil {
-		t.Fatal(err)
-	}
-	if len(fallback.All()) != 0 || fallback.Now() != "" {
-		t.Fatalf("fallback exclusions were not refreshed: now=%q all=%v", fallback.Now(), fallback.All())
-	}
-	if _, err := fallback.DialContext(context.Background(), "tcp", M.Socksaddr{}); err == nil {
-		t.Fatal("empty fallback dial succeeded")
-	}
-	if compatible.dialCount != 0 {
-		t.Fatalf("empty fallback dialed Compatible %d times", compatible.dialCount)
-	}
-
-	nested.members = []string{nodeA.Tag()}
-	if err := fallback.onProviderUpdated(provider.Tag()); err != nil {
-		t.Fatal(err)
-	}
-	if all := fallback.All(); len(all) != 1 || all[0] != nodeB.Tag() || fallback.Now() != nodeB.Tag() {
-		t.Fatalf("fallback did not recover after provider refresh: now=%q all=%v", fallback.Now(), all)
-	}
-}
-
-func TestFallbackIgnoresStaleCandidateFailure(t *testing.T) {
-	oldOutbound := newTestOutbound("provider/node")
-	newOutbound := newTestOutbound("provider/node")
-	fallback := &Fallback{
-		outbounds:        map[string]adapter.Outbound{newOutbound.Tag(): newOutbound},
-		blacklist:        make(map[string]time.Time),
-		blacklistTimeout: time.Minute,
-	}
-
-	fallback.addToBlacklist(fallbackCandidate{tag: oldOutbound.Tag(), outbound: oldOutbound})
-	if len(fallback.blacklist) != 0 {
-		t.Fatal("stale provider outbound blacklisted its replacement")
-	}
-	fallback.addToBlacklist(fallbackCandidate{tag: newOutbound.Tag(), outbound: newOutbound})
-	if _, loaded := fallback.blacklist[newOutbound.Tag()]; !loaded {
-		t.Fatal("current provider outbound failure was not blacklisted")
-	}
 }
