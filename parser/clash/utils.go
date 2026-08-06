@@ -133,7 +133,7 @@ func clashSpeedToNetworkBytes(speed string) *byteformats.NetworkBytesCompat {
 	return networkBytes
 }
 
-func clashTransport(network string, httpOpts HTTPOptions, h2Opts HTTP2Options, grpcOpts GrpcOptions, wsOpts WSOptions) *option.V2RayTransportOptions {
+func clashTransport(network string, httpOpts HTTPOptions, h2Opts HTTP2Options, grpcOpts GrpcOptions, wsOpts WSOptions, xhttpOpts XHTTPOptions) *option.V2RayTransportOptions {
 	switch network {
 	case "http":
 		return &option.V2RayTransportOptions{
@@ -184,6 +184,8 @@ func clashTransport(network string, httpOpts HTTPOptions, h2Opts HTTP2Options, g
 				EarlyDataHeaderName: wsOpts.EarlyDataHeaderName,
 			},
 		}
+	case "xhttp":
+		return xhttpOpts.Build()
 	default:
 		return nil
 	}

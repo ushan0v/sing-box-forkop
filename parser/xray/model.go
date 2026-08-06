@@ -84,9 +84,10 @@ type httpUpgradeSettings struct {
 }
 
 type xhttpSettings struct {
-	Host string `json:"host"`
-	Path string `json:"path"`
-	Mode string `json:"mode"`
+	Host  string          `json:"host"`
+	Path  string          `json:"path"`
+	Mode  string          `json:"mode"`
+	Extra json.RawMessage `json:"extra"`
 }
 
 type kcpSettings struct {

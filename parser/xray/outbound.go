@@ -2,6 +2,7 @@ package xray
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	boxCommon "github.com/sagernet/sing-box/common"
@@ -416,20 +417,19 @@ func parseTransport(stream streamSettings) (*option.V2RayTransportOptions, error
 			},
 		}, nil
 	case "xhttp", "splithttp":
-		padding, _ := boxCommon.ParseXHTTPRange("100-1000")
 		mode := stream.XHTTPSettings.Mode
 		if mode == "" {
 			mode = "auto"
 		}
+		base, err := xhttpBaseOptions(stream.XHTTPSettings)
+		if err != nil {
+			return nil, err
+		}
 		return &option.V2RayTransportOptions{
 			Type: C.V2RayTransportTypeXHTTP,
 			XHTTPOptions: option.V2RayXHTTPOptions{
-				Mode: mode,
-				V2RayXHTTPBaseOptions: option.V2RayXHTTPBaseOptions{
-					Host:          stream.XHTTPSettings.Host,
-					Path:          stream.XHTTPSettings.Path,
-					XPaddingBytes: padding,
-				},
+				Mode:                  mode,
+				V2RayXHTTPBaseOptions: base,
 			},
 		}, nil
 	case "kcp", "mkcp":
@@ -453,4 +453,160 @@ func parseTransport(stream streamSettings) (*option.V2RayTransportOptions, error
 	default:
 		return nil, E.New("unsupported Xray transport: ", stream.Network)
 	}
+}
+
+func xhttpExtra(settings xhttpSettings) map[string]any {
+	if len(settings.Extra) == 0 {
+		return nil
+	}
+	var extra map[string]any
+	if json.Unmarshal(settings.Extra, &extra) == nil {
+		return extra
+	}
+	var encoded string
+	if json.Unmarshal(settings.Extra, &encoded) == nil {
+		_ = json.Unmarshal([]byte(encoded), &extra)
+	}
+	return extra
+}
+
+func xhttpString(extra map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := extra[key].(string); ok && value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func xhttpBool(extra map[string]any, key string) bool {
+	value, ok := extra[key]
+	if !ok {
+		return false
+	}
+	if boolean, ok := value.(bool); ok {
+		return boolean
+	}
+	if text, ok := value.(string); ok {
+		return text == "1" || strings.EqualFold(text, "true")
+	}
+	return false
+}
+
+func xhttpRange(extra map[string]any, key string) (*badoption.Range[int], error) {
+	value, ok := extra[key]
+	if !ok {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var result badoption.Range[int]
+	if err := json.Unmarshal(encoded, &result); err != nil {
+		return nil, E.Cause(err, "invalid XHTTP ", key)
+	}
+	return &result, nil
+}
+
+func xhttpInt64(extra map[string]any, key string) int64 {
+	value, ok := extra[key]
+	if !ok {
+		return 0
+	}
+	switch value := value.(type) {
+	case float64:
+		return int64(value)
+	case string:
+		parsed, _ := strconv.ParseInt(value, 10, 64)
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func xhttpBaseOptions(settings xhttpSettings) (option.V2RayXHTTPBaseOptions, error) {
+	padding, _ := boxCommon.ParseXHTTPRange("100-1000")
+	base := option.V2RayXHTTPBaseOptions{
+		Host:          settings.Host,
+		Path:          settings.Path,
+		XPaddingBytes: padding,
+	}
+	extra := xhttpExtra(settings)
+	if extra == nil {
+		return base, nil
+	}
+	base.NoGRPCHeader = xhttpBool(extra, "noGRPCHeader")
+	base.XPaddingObfsMode = xhttpBool(extra, "xPaddingObfsMode")
+	base.XPaddingKey = xhttpString(extra, "xPaddingKey")
+	base.XPaddingHeader = xhttpString(extra, "xPaddingHeader")
+	base.XPaddingPlacement = xhttpString(extra, "xPaddingPlacement")
+	base.XPaddingMethod = xhttpString(extra, "xPaddingMethod")
+	base.UplinkHTTPMethod = xhttpString(extra, "uplinkHTTPMethod")
+	base.SessionPlacement = xhttpString(extra, "sessionIDPlacement", "sessionPlacement")
+	base.SessionKey = xhttpString(extra, "sessionIDKey", "sessionKey")
+	base.SeqPlacement = xhttpString(extra, "seqPlacement")
+	base.SeqKey = xhttpString(extra, "seqKey")
+	base.UplinkDataPlacement = xhttpString(extra, "uplinkDataPlacement")
+	base.UplinkDataKey = xhttpString(extra, "uplinkDataKey")
+	base.SessionIDTable = xhttpString(extra, "sessionIDTable")
+	base.CongestionController = xhttpString(extra, "congestionController")
+	base.CWND = int(xhttpInt64(extra, "cwnd"))
+	base.ScMaxBufferedPosts = xhttpInt64(extra, "scMaxBufferedPosts")
+	base.ServerMaxHeaderBytes = int(xhttpInt64(extra, "maxHeaderBytes"))
+	if base.ServerMaxHeaderBytes == 0 {
+		base.ServerMaxHeaderBytes = int(xhttpInt64(extra, "serverMaxHeaderBytes"))
+	}
+	if trusted := xhttpString(extra, "trustedXForwardedFor"); trusted != "" {
+		base.TrustedXForwardedFor = badoption.Listable[string]{trusted}
+	}
+	value, err := xhttpRange(extra, "xPaddingBytes")
+	if err != nil {
+		return base, err
+	}
+	if value != nil {
+		base.XPaddingBytes = *value
+	}
+	value, err = xhttpRange(extra, "sessionIDLength")
+	if err != nil {
+		return base, err
+	}
+	if value != nil {
+		base.SessionIDLength = *value
+	}
+	for key, target := range map[string]**badoption.Range[int]{
+		"scMaxEachPostBytes":   &base.ScMaxEachPostBytes,
+		"scMinPostsIntervalMs": &base.ScMinPostsIntervalMs,
+		"scStreamUpServerSecs": &base.ScStreamUpServerSecs,
+		"uplinkChunkSize":      &base.UplinkChunkSize,
+	} {
+		value, err := xhttpRange(extra, key)
+		if err != nil {
+			return base, err
+		}
+		if value != nil {
+			*target = value
+		}
+	}
+	if raw, ok := extra["xmux"].(map[string]any); ok {
+		xmux := &option.V2RayXHTTPXmuxOptions{}
+		for key, target := range map[string]*badoption.Range[int]{
+			"maxConcurrency":   &xmux.MaxConcurrency,
+			"maxConnections":   &xmux.MaxConnections,
+			"cMaxReuseTimes":   &xmux.CMaxReuseTimes,
+			"hMaxRequestTimes": &xmux.HMaxRequestTimes,
+			"hMaxReusableSecs": &xmux.HMaxReusableSecs,
+		} {
+			value, err := xhttpRange(raw, key)
+			if err != nil {
+				return base, err
+			}
+			if value != nil {
+				*target = *value
+			}
+		}
+		xmux.HKeepAlivePeriod = xhttpInt64(raw, "hKeepAlivePeriod")
+		base.Xmux = xmux
+	}
+	return base, nil
 }

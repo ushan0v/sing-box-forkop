@@ -53,6 +53,21 @@ func TestParseVMessMKCPLink(t *testing.T) {
 	}
 }
 
+func TestParseShadowsocks2022LinkWithEncodedUserInfo(t *testing.T) {
+	link := "ss://MjAyMi1ibGFrZTMtYWVzLTI1Ni1nY206dGVzdC9rZXk6d2l0aC9zbGFzaGVz@example.com:443?type=tcp#encoded-userinfo"
+	outbound, err := ParseSubscriptionLink(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outbound.Type != C.TypeShadowsocks || outbound.Tag != "encoded-userinfo" {
+		t.Fatalf("unexpected outbound: type=%q tag=%q", outbound.Type, outbound.Tag)
+	}
+	options := outbound.Options.(*option.ShadowsocksOutboundOptions)
+	if options.Method != "2022-blake3-aes-256-gcm" || options.Password != "test/key:with/slashes" || options.Server != "example.com" || options.ServerPort != 443 {
+		t.Fatalf("unexpected Shadowsocks options: %#v", options)
+	}
+}
+
 func TestGenerateSubscriptionLinkRoundTrip(t *testing.T) {
 	packetEncoding := "xudp"
 	tests := []option.Outbound{

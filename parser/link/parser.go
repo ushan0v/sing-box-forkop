@@ -1,6 +1,7 @@
 package link
 
 import (
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -32,6 +33,12 @@ func ParseSubscriptionLink(link string) (option.Outbound, error) {
 		return parseHysteria2Link(link)
 	}
 	result[3], _ = common.DecodeBase64URLSafe(result[3])
+	if scheme == "ss" {
+		credentials := strings.SplitN(result[3], ":", 2)
+		if len(credentials) == 2 {
+			result[3] = url.UserPassword(credentials[0], credentials[1]).String()
+		}
+	}
 	link = strings.Join(result[1:], "")
 	switch scheme {
 	case "ss":

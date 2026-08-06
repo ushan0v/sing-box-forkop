@@ -158,6 +158,46 @@ func TestXrayHysteria2StreamSettings(t *testing.T) {
 	}
 }
 
+func TestXrayXHTTPExtraSettings(t *testing.T) {
+	outbounds, err := ParseXraySubscription(context.Background(), `{
+  "outbounds":[{
+    "protocol":"vless",
+    "tag":"xhttp",
+    "settings":{"vnext":[{"address":"xhttp.example","port":443,"users":[{"id":"uuid"}]}]},
+    "streamSettings":{"network":"xhttp","xhttpSettings":{
+      "host":"cdn.example","path":"/xhttp","mode":"stream-up",
+      "extra":{
+        "noGRPCHeader":true,"xPaddingBytes":"200-400","xPaddingObfsMode":true,
+        "xPaddingKey":"pad","xPaddingHeader":"Referer","xPaddingPlacement":"header","xPaddingMethod":"tokenish",
+        "uplinkHTTPMethod":"PUT","sessionPlacement":"cookie","sessionKey":"sid",
+        "seqPlacement":"header","seqKey":"seq","sessionIDTable":"abcdef","sessionIDLength":"8-16",
+        "uplinkDataPlacement":"body","uplinkDataKey":"payload","scMaxEachPostBytes":"1000",
+        "scMinPostsIntervalMs":"10","scStreamUpServerSecs":"5",
+        "xmux":{"maxConcurrency":"2-4","hKeepAlivePeriod":"12"}
+      }
+    }}
+  }]
+}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := outbounds[0].Options.(*option.VLESSOutboundOptions).Transport
+	if transport == nil || transport.Type != C.V2RayTransportTypeXHTTP {
+		t.Fatalf("transport = %#v, want xhttp", transport)
+	}
+	xhttp := transport.XHTTPOptions
+	if xhttp.Host != "cdn.example" || xhttp.Path != "/xhttp" || xhttp.Mode != "stream-up" ||
+		!xhttp.NoGRPCHeader || !xhttp.XPaddingObfsMode || xhttp.XPaddingKey != "pad" ||
+		xhttp.XPaddingHeader != "Referer" || xhttp.XPaddingPlacement != "header" || xhttp.XPaddingMethod != "tokenish" ||
+		xhttp.UplinkHTTPMethod != "PUT" || xhttp.SessionPlacement != "cookie" || xhttp.SessionKey != "sid" ||
+		xhttp.SeqPlacement != "header" || xhttp.SeqKey != "seq" || xhttp.SessionIDTable != "abcdef" ||
+		xhttp.SessionIDLength.From != 8 || xhttp.SessionIDLength.To != 16 || xhttp.ScMaxEachPostBytes == nil ||
+		xhttp.ScMaxEachPostBytes.From != 1000 || xhttp.ScMinPostsIntervalMs == nil || xhttp.ScStreamUpServerSecs == nil ||
+		xhttp.Xmux == nil || xhttp.Xmux.MaxConcurrency.From != 2 || xhttp.Xmux.HKeepAlivePeriod != 12 {
+		t.Fatalf("XHTTP extra settings were lost: %#v", xhttp)
+	}
+}
+
 func TestXrayCommonProxyProtocols(t *testing.T) {
 	outbounds, err := ParseXraySubscription(context.Background(), `{
   "outbounds": [

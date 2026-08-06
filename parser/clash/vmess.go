@@ -16,6 +16,7 @@ type VmessOption struct {
 	HTTP2Opts           HTTP2Options `yaml:"h2-opts,omitempty"`
 	GrpcOpts            GrpcOptions  `yaml:"grpc-opts,omitempty"`
 	WSOpts              WSOptions    `yaml:"ws-opts,omitempty"`
+	XHTTPOpts           XHTTPOptions `yaml:"xhttp-opts,omitempty"`
 	PacketAddr          bool         `yaml:"packet-addr,omitempty"`
 	XUDP                bool         `yaml:"xudp,omitempty"`
 	PacketEncoding      string       `yaml:"packet-encoding,omitempty"`
@@ -50,6 +51,6 @@ func (v *VmessOption) Build() any {
 		OutboundTLSOptionsContainer: clashTLSOptions(v.Server, v.TLSOptions),
 		PacketEncoding:              v.PacketEncoding,
 		Multiplex:                   v.MuxOpts.Build(),
-		Transport:                   clashTransport(v.Network, v.HTTPOpts, v.HTTP2Opts, v.GrpcOpts, v.WSOpts),
+		Transport:                   clashTransport(v.Network, v.HTTPOpts, v.HTTP2Opts, v.GrpcOpts, v.WSOpts, v.XHTTPOpts),
 	}
 }

@@ -18,6 +18,7 @@ type VlessOption struct {
 	HTTP2Opts      HTTP2Options `yaml:"h2-opts,omitempty"`
 	GrpcOpts       GrpcOptions  `yaml:"grpc-opts,omitempty"`
 	WSOpts         WSOptions    `yaml:"ws-opts,omitempty"`
+	XHTTPOpts      XHTTPOptions `yaml:"xhttp-opts,omitempty"`
 	MuxOpts        *MuxOptions  `yaml:"smux,omitempty"`
 }
 
@@ -43,7 +44,7 @@ func (v *VlessOption) Build() any {
 		Network:                     clashNetworks(v.UDP),
 		OutboundTLSOptionsContainer: clashTLSOptions(v.Server, v.TLSOptions),
 		Multiplex:                   v.MuxOpts.Build(),
-		Transport:                   clashTransport(v.Network, v.HTTPOpts, v.HTTP2Opts, v.GrpcOpts, v.WSOpts),
+		Transport:                   clashTransport(v.Network, v.HTTPOpts, v.HTTP2Opts, v.GrpcOpts, v.WSOpts, v.XHTTPOpts),
 		PacketEncoding:              &v.PacketEncoding,
 	}
 }
