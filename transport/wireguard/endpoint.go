@@ -20,6 +20,7 @@ import (
 	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
 	F "github.com/sagernet/sing/common/format"
+	"github.com/sagernet/sing/common/json/badoption"
 	M "github.com/sagernet/sing/common/metadata"
 	"github.com/sagernet/sing/common/x/list"
 	"github.com/sagernet/sing/service"
@@ -55,6 +56,16 @@ func NewEndpoint(options EndpointOptions) (*Endpoint, error) {
 	ipcConf := "private_key=" + privateKey
 	if options.ListenPort != 0 {
 		ipcConf += "\nlisten_port=" + F.ToString(options.ListenPort)
+	}
+	if options.Amnezia != nil && options.Amnezia.HeaderProtectionKey != "" {
+		headerProtectionKey, err := base64.StdEncoding.DecodeString(options.Amnezia.HeaderProtectionKey)
+		if err != nil {
+			return nil, E.Cause(err, "decode header protection key")
+		}
+		if len(headerProtectionKey) != 32 {
+			return nil, E.New("invalid header protection key length")
+		}
+		ipcConf += "\nheader_protection_key=" + hex.EncodeToString(headerProtectionKey)
 	}
 	var peers []peerConfig
 	for peerIndex, rawPeer := range options.Peers {
@@ -235,18 +246,17 @@ func (e *Endpoint) Start(resolve bool) error {
 		if e.options.Amnezia.I5 != "" {
 			ipcConf.WriteString("\ni5=" + e.options.Amnezia.I5)
 		}
-		if e.options.Amnezia.J1 != "" {
-			ipcConf.WriteString("\nj1=" + e.options.Amnezia.J1)
+		writeRange := func(name string, value *badoption.Range[uint32]) {
+			if value != nil && (value.From > 0 || value.To > 0) {
+				ipcConf.WriteString("\n" + name + "=" + value.String())
+			}
 		}
-		if e.options.Amnezia.J2 != "" {
-			ipcConf.WriteString("\nj2=" + e.options.Amnezia.J2)
-		}
-		if e.options.Amnezia.J3 != "" {
-			ipcConf.WriteString("\nj3=" + e.options.Amnezia.J3)
-		}
-		if e.options.Amnezia.ITime > 0 {
-			ipcConf.WriteString("\nitime=" + strconv.FormatInt(e.options.Amnezia.ITime, 10))
-		}
+		writeRange("content_padding_addition", e.options.Amnezia.ContentPaddingAddition)
+		writeRange("rekey_after_time", e.options.Amnezia.RekeyAfterTime)
+		writeRange("rekey_timeout", e.options.Amnezia.RekeyTimeout)
+		writeRange("reject_after_time", e.options.Amnezia.RejectAfterTime)
+		writeRange("keepalive_timeout", e.options.Amnezia.KeepaliveTimeout)
+		writeRange("max_handshake_attempts", e.options.Amnezia.MaxHandshakeAttempts)
 	}
 	for _, peer := range e.peers {
 		ipcConf.WriteString(peer.GenerateIpcLines())
@@ -321,7 +331,7 @@ type peerConfig struct {
 	publicKeyHex    string
 	preSharedKeyHex string
 	allowedIPs      []netip.Prefix
-	keepalive       uint16
+	keepalive       *badoption.Range[uint32]
 }
 
 func (c peerConfig) GenerateIpcLines() string {
@@ -336,8 +346,8 @@ func (c peerConfig) GenerateIpcLines() string {
 	for _, allowedIP := range c.allowedIPs {
 		ipcLines.WriteString("\nallowed_ip=" + allowedIP.String())
 	}
-	if c.keepalive > 0 {
-		ipcLines.WriteString("\npersistent_keepalive_interval=" + F.ToString(c.keepalive))
+	if c.keepalive != nil && (c.keepalive.From > 0 || c.keepalive.To > 0) {
+		ipcLines.WriteString("\npersistent_keepalive_interval=" + c.keepalive.String())
 	}
 	return ipcLines.String()
 }
