@@ -112,7 +112,7 @@ func (s *RemoteRuleSet) StartContext(ctx context.Context, startContext *adapter.
 		if savedSet := s.cacheFile.LoadRuleSet(s.options.Tag); savedSet != nil {
 			err := s.loadBytes(savedSet.Content, savedSet.LastUpdated, savedSet.LastEtag)
 			if err != nil {
-				s.logger.Error(E.Cause(err, "restore cached rule-set ", s.options.Tag))
+				s.logger.Warn(E.Cause(err, "restore cached rule-set, will refetch"))
 			}
 		}
 	}

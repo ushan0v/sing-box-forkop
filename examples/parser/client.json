@@ -25,7 +25,7 @@
     {
       "type": "parser",
       "tag": "vless-out",
-      // Supported protocols: hysteria, hysteria2, shadowsocks, trojan, tuic, vless, vmess
+      // Supported protocols: hysteria, hysteria2, shadowsocks, trojan, tuic, vless, vmess, anytls
       "link": "vless://b5e41c8c-c437-4689-b863-76208a3efb4b@0.0.0.0:443?..."
       // Dial Fields
     }

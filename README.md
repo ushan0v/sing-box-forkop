@@ -19,7 +19,8 @@ Sing-box with extended features.
 - **Sudoku** — Traffic obfuscation protocol based on 4×4 Sudoku puzzles with low-entropy fingerprints
 - **Snell** — Lightweight encrypted proxy (v1–v5) with TLS / HTTP obfuscation
 - **SSH** — SSH client and server with certificate authentication and upstream fallback
-- **VPN** — Routed tunnel over any TCP sing-box protocol
+- **Call** — Traffic tunneling through video-call platforms (VK, Dion, Telemost, WBStream)
+- **VPN** — Routed tunnel over any sing-box protocol
 - **Bond** — Link aggregation for increasing throughput
 - **Fallback** — Outbound group with priority-based switching
 - **Failover** — Automatic outbound switching with session recovery for high availability
@@ -35,12 +36,13 @@ Sing-box with extended features.
 - **Rate Limiter** — Request rate limiting
 
 ### Encryption & Obfuscation
-- **Amnezia 2.0** — WireGuard traffic obfuscation
+- **Amnezia 3.0** — WireGuard traffic obfuscation
 - **VLESS encryption** — XRAY encryption for VLESS protocol
 
 ### Transports
 - **mKCP** — Reliable UDP-based transport
 - **XHTTP** — Modern XRAY transport
+- **Rmux** — Improved smux multiplex rmux
 
 ### Services
 - **Admin Panel** — Web-based management interface
@@ -50,7 +52,7 @@ Sing-box with extended features.
 
 ### Miscellaneous
 - **Providers** — Outbound subscriptions from local files, inline lists, or remote URLs (sing-box JSON, Clash YAML, SIP008, share links)
-- **Link Parser** — Outbound configured from a share link (VLESS, VMess, Shadowsocks, Trojan, Hysteria, Hysteria2, TUIC)
+- **Link Parser** — Outbound configured from a share link (VLESS, VMess, Shadowsocks, Trojan, Hysteria, Hysteria2, TUIC, AnyTLS)
 - **Extended WireGuard options** — Advanced configuration capabilities
 - **Unified Delay** — Unified latency measurement
 

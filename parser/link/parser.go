@@ -31,6 +31,8 @@ func ParseSubscriptionLink(link string) (option.Outbound, error) {
 		return parseHysteriaLink(link)
 	case "hy2", "hysteria2":
 		return parseHysteria2Link(link)
+	case "anytls":
+		return parseAnyTLSLink(link)
 	}
 	result[3], _ = common.DecodeBase64URLSafe(result[3])
 	if scheme == "ss" {

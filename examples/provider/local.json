@@ -46,7 +46,7 @@
       //   - sing-box JSON ({ "outbounds": [...] })
       //   - Clash YAML
       //   - SIP008 (shadowsocks)
-      //   - Raw shareable links (vless://, vmess://, ss://, trojan://, ...)
+      //   - Raw shareable links (vless://, vmess://, ss://, trojan://, anytls://, ...)
       "path": "subscriptions/my-sub.txt",
       // Remove emoji flags from proxy names.
       "remove_emojis": true,
