@@ -42,7 +42,7 @@ Sing-box with extended features.
 ### Transports
 - **mKCP** — Reliable UDP-based transport
 - **XHTTP** — Modern XRAY transport
-- **Rmux** — Improved smux multiplex rmux
+- **Rmux** — Improved smux multiplexer
 
 ### Services
 - **Admin Panel** — Web-based management interface
