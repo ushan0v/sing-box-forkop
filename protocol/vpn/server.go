@@ -126,18 +126,19 @@ func (s *ServerEndpoint) DialContext(ctx context.Context, network string, destin
 		}
 	}
 	if gateway == nil {
-		if destination.IsIPv4() {
+		if s.defaultGateway != nil {
+			gateway = s.defaultGateway
+		} else if destination.IsIPv4() {
 			gateway = &destination.Addr
 			destination = M.Socksaddr{
 				Addr: Loopback,
 				Port: destination.Port,
 			}
-		} else if s.defaultGateway != nil {
-			gateway = s.defaultGateway
 		} else {
 			return nil, E.New("missing gateway")
 		}
-	} else if destination.Addr.Compare(*gateway) == 0 {
+	}
+	if destination.Addr.Compare(*gateway) == 0 {
 		destination = M.Socksaddr{
 			Addr: Loopback,
 			Port: destination.Port,
