@@ -106,6 +106,25 @@ func NewEndpoint(ctx context.Context, router adapter.Router, logger log.ContextL
 		}
 		peer := config.Peers[0]
 		hostParts := strings.Split(peer.Endpoint.Host, ":")
+		var amnezia *option.WireGuardAmnezia
+		if options.Amnezia != nil {
+			amnezia = &option.WireGuardAmnezia{
+				JC:                     options.Amnezia.JC,
+				JMin:                   options.Amnezia.JMin,
+				JMax:                   options.Amnezia.JMax,
+				I1:                     options.Amnezia.I1,
+				I2:                     options.Amnezia.I2,
+				I3:                     options.Amnezia.I3,
+				I4:                     options.Amnezia.I4,
+				I5:                     options.Amnezia.I5,
+				ContentPaddingAddition: options.Amnezia.ContentPaddingAddition,
+				RekeyAfterTime:         options.Amnezia.RekeyAfterTime,
+				RekeyTimeout:           options.Amnezia.RekeyTimeout,
+				RejectAfterTime:        options.Amnezia.RejectAfterTime,
+				KeepaliveTimeout:       options.Amnezia.KeepaliveTimeout,
+				MaxHandshakeAttempts:   options.Amnezia.MaxHandshakeAttempts,
+			}
+		}
 		endpoint.endpoint, err = wireguard.NewEndpoint(
 			ctx,
 			router,
@@ -119,7 +138,7 @@ func NewEndpoint(ctx context.Context, router adapter.Router, logger log.ContextL
 				Workers:                    options.Workers,
 				PreallocatedBuffersPerPool: options.PreallocatedBuffersPerPool,
 				DisablePauses:              options.DisablePauses,
-				Amnezia:                    options.Amnezia,
+				Amnezia:                    amnezia,
 				DialerOptions:              options.DialerOptions,
 
 				Address: badoption.Listable[netip.Prefix]{
