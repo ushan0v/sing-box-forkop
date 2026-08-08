@@ -19,6 +19,10 @@ func ParseSubscriptionLink(link string) (option.Outbound, error) {
 
 	scheme := result[1]
 	switch scheme {
+	case "naive+https", "naive+quic":
+		return parseNaiveLink(link)
+	case "mieru", "mierus":
+		return parseMieruLink(link)
 	case "socks", "socks4", "socks4a", "socks5":
 		return parseSOCKSLink(link)
 	case "tuic":

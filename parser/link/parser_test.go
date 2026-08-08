@@ -5,10 +5,94 @@ import (
 	"testing"
 	"time"
 
+	mieruappctl "github.com/enfein/mieru/v3/pkg/appctl"
+	mierupb "github.com/enfein/mieru/v3/pkg/appctl/appctlpb"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common/json/badoption"
+	"google.golang.org/protobuf/proto"
 )
+
+func TestParseNaiveLinks(t *testing.T) {
+	tests := []struct {
+		name       string
+		link       string
+		server     string
+		port       uint16
+		password   string
+		serverName string
+		tag        string
+		quic       bool
+	}{
+		{"HTTPS", "naive+https://user:p%40ss@example.com?extra-headers=X-Username%3Auser%0D%0AX-Role%3Aproxy&sni=front.example#Naive", "example.com", 443, "p@ss", "front.example", "Naive", false},
+		{"QUIC", "naive+quic://user:password@quic.example:8443#Naive%20QUIC", "quic.example", 8443, "password", "quic.example", "Naive QUIC", true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			outbound, err := ParseSubscriptionLink(test.link)
+			if err != nil {
+				t.Fatal(err)
+			}
+			options := outbound.Options.(*option.NaiveOutboundOptions)
+			if outbound.Type != C.TypeNaive || options.QUIC != test.quic {
+				t.Fatalf("unexpected outbound: type=%q quic=%v", outbound.Type, options.QUIC)
+			}
+			if outbound.Tag != test.tag || options.Username != "user" || options.Password != test.password || options.Server != test.server || options.ServerPort != test.port {
+				t.Fatalf("unexpected naive options: %#v", options)
+			}
+			if options.TLS == nil || !options.TLS.Enabled || options.TLS.ServerName != test.serverName {
+				t.Fatalf("unexpected naive TLS options: %#v", options.TLS)
+			}
+			if test.name == "HTTPS" && (options.ExtraHeaders["X-Username"][0] != "user" || options.ExtraHeaders["X-Role"][0] != "proxy") {
+				t.Fatalf("unexpected naive extra headers: %#v", options.ExtraHeaders)
+			}
+		})
+	}
+}
+
+func TestParseMieruSimpleLink(t *testing.T) {
+	outbound, err := ParseSubscriptionLink("mierus://alice:s3cret@203.0.113.7?profile=default&port=2012-2022&protocol=TCP&multiplexing=MULTIPLEXING_HIGH#Mieru")
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := outbound.Options.(*option.MieruOutboundOptions)
+	if outbound.Type != C.TypeMieru || outbound.Tag != "Mieru" {
+		t.Fatalf("unexpected outbound: type=%q tag=%q", outbound.Type, outbound.Tag)
+	}
+	if options.Server != "203.0.113.7" || options.UserName != "alice" || options.Password != "s3cret" || options.Transport != "TCP" {
+		t.Fatalf("unexpected mieru options: %#v", options)
+	}
+	if len(options.ServerPortRanges) != 1 || options.ServerPortRanges[0] != "2012-2022" || options.Multiplexing != "MULTIPLEXING_HIGH" {
+		t.Fatalf("unexpected mieru port options: %#v", options)
+	}
+}
+
+func TestParseMieruStandardLink(t *testing.T) {
+	link, err := mieruappctl.ClientConfigToURL(&mierupb.ClientConfig{
+		Profiles: []*mierupb.ClientProfile{{
+			ProfileName: proto.String("default"),
+			User:        &mierupb.User{Name: proto.String("alice"), Password: proto.String("s3cret")},
+			Servers: []*mierupb.ServerEndpoint{{
+				DomainName: proto.String("mieru.example"),
+				PortBindings: []*mierupb.PortBinding{{
+					Port: proto.Int32(443), Protocol: mierupb.TransportProtocol_TCP.Enum(),
+				}},
+			}},
+		}},
+		ActiveProfile: proto.String("default"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outbound, err := ParseSubscriptionLink(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := outbound.Options.(*option.MieruOutboundOptions)
+	if outbound.Type != C.TypeMieru || options.Server != "mieru.example" || options.ServerPort != 443 || options.Transport != "TCP" {
+		t.Fatalf("unexpected mieru options: %#v", options)
+	}
+}
 
 func TestParseSOCKSLinkPreservesEqualCredentials(t *testing.T) {
 	outbound, err := ParseSubscriptionLink("socks5://same:same@127.0.0.1:1080#equal-creds")
