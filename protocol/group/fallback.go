@@ -28,7 +28,6 @@ import (
 const (
 	defaultFallbackURL                  = "https://www.gstatic.com/generate_204"
 	defaultFallbackAttemptTimeout       = 5 * time.Second
-	defaultFallbackFailureWindow        = 5 * time.Second
 	defaultFallbackMaxFailedAttempts    = 5
 	defaultFallbackStartupRetryInterval = 5 * time.Second
 	defaultFallbackStartupRetryCount    = 12
@@ -90,6 +89,8 @@ type Fallback struct {
 	link                         string
 	interval                     time.Duration
 	timeout                      time.Duration
+	maxFailedTimes               int
+	expectedStatus               urltest.ExpectedStatus
 	attemptTimeout               time.Duration
 	idleTimeout                  time.Duration
 	interruptExternalConnections bool
@@ -151,6 +152,17 @@ func NewFallback(ctx context.Context, router adapter.Router, logger log.ContextL
 	if interval > idleTimeout {
 		return nil, E.New("fallback interval must be less or equal than idle_timeout")
 	}
+	maxFailedTimes := options.MaxFailedTimes
+	if maxFailedTimes == 0 {
+		maxFailedTimes = defaultFallbackMaxFailedAttempts
+	}
+	if maxFailedTimes < 1 {
+		return nil, E.New("fallback max_failed_times must be positive")
+	}
+	expectedStatus, err := urltest.ParseExpectedStatus(options.ExpectedStatus)
+	if err != nil {
+		return nil, E.Cause(err, "invalid fallback expected_status")
+	}
 	link := options.URL
 	if link == "" {
 		link = defaultFallbackURL
@@ -177,6 +189,8 @@ func NewFallback(ctx context.Context, router adapter.Router, logger log.ContextL
 		link:                         link,
 		interval:                     interval,
 		timeout:                      timeout,
+		maxFailedTimes:               maxFailedTimes,
+		expectedStatus:               expectedStatus,
 		attemptTimeout:               defaultFallbackAttemptTimeout,
 		idleTimeout:                  idleTimeout,
 		interruptExternalConnections: options.InterruptExistConnections,
@@ -501,13 +515,21 @@ func (s *Fallback) recordDialFailure(candidate fallbackCandidate, err error) {
 		return
 	}
 	now := time.Now()
-	if state.failureCount == 0 || now.Sub(state.failureStarted) > defaultFallbackFailureWindow {
+	failureWindow := s.timeout
+	if failureWindow <= 0 {
+		failureWindow = defaultFallbackAttemptTimeout
+	}
+	if state.failureCount == 0 || now.Sub(state.failureStarted) > failureWindow {
 		state.failureCount = 1
 		state.failureStarted = now
 	} else {
 		state.failureCount++
 	}
-	check := errors.Is(err, syscall.ECONNREFUSED) || state.failureCount >= defaultFallbackMaxFailedAttempts
+	maxFailedTimes := s.maxFailedTimes
+	if maxFailedTimes <= 0 {
+		maxFailedTimes = defaultFallbackMaxFailedAttempts
+	}
+	check := errors.Is(err, syscall.ECONNREFUSED) || state.failureCount >= maxFailedTimes
 	if check {
 		state.failureCount = 0
 		state.failureStarted = time.Time{}
@@ -595,7 +617,7 @@ func (s *Fallback) checkCandidates(ctx context.Context, candidates []fallbackCan
 		b.Go(candidate.tag, func() (any, error) {
 			testContext, cancel := context.WithTimeout(ctx, s.timeout)
 			defer cancel()
-			results[index].delay, results[index].err = urltest.URLTest(testContext, s.link, candidate.outbound)
+			results[index].delay, results[index].err = urltest.URLTestWithExpectedStatus(testContext, s.link, candidate.outbound, s.expectedStatus)
 			return nil, nil
 		})
 	}

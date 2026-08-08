@@ -23,6 +23,8 @@ type FallbackOutboundOptions struct {
 	URL                       string                 `json:"url,omitempty"`
 	Interval                  badoption.Duration     `json:"interval,omitempty"`
 	Timeout                   badoption.Duration     `json:"timeout,omitempty"`
+	MaxFailedTimes            int                    `json:"max_failed_times,omitempty"`
+	ExpectedStatus            string                 `json:"expected_status,omitempty"`
 	IdleTimeout               badoption.Duration     `json:"idle_timeout,omitempty"`
 	InterruptExistConnections bool                   `json:"interrupt_exist_connections,omitempty"`
 }

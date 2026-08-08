@@ -130,6 +130,7 @@ func newTestFallback(candidates ...fallbackCandidate) *Fallback {
 		selected:       selected,
 		link:           "http://health.test/generate_204",
 		timeout:        50 * time.Millisecond,
+		maxFailedTimes: defaultFallbackMaxFailedAttempts,
 		attemptTimeout: 20 * time.Millisecond,
 		idleTimeout:    time.Minute,
 		interruptGroup: interrupt.NewGroup(),
@@ -152,8 +153,8 @@ func TestFallbackDefaultHealthTiming(t *testing.T) {
 		t.Fatal(err)
 	}
 	fallback := outbound.(*Fallback)
-	if fallback.interval != 5*time.Minute || fallback.timeout != 5*time.Second || fallback.idleTimeout != fallback.interval {
-		t.Fatalf("unexpected Fallback health defaults: interval=%v timeout=%v idle=%v", fallback.interval, fallback.timeout, fallback.idleTimeout)
+	if fallback.interval != 5*time.Minute || fallback.timeout != 5*time.Second || fallback.idleTimeout != fallback.interval || fallback.maxFailedTimes != 5 || !fallback.expectedStatus.Contains(500) {
+		t.Fatalf("unexpected Fallback health defaults: interval=%v timeout=%v idle=%v max-failed=%d", fallback.interval, fallback.timeout, fallback.idleTimeout, fallback.maxFailedTimes)
 	}
 }
 
@@ -257,7 +258,8 @@ func TestFallbackDialFailuresUseMihomoThreshold(t *testing.T) {
 		fallbackCandidate{tag: primary.Tag(), outbound: primary},
 		fallbackCandidate{tag: secondary.Tag(), outbound: secondary},
 	)
-	for attempt := 0; attempt < defaultFallbackMaxFailedAttempts-1; attempt++ {
+	fallback.maxFailedTimes = 2
+	for attempt := 0; attempt < fallback.maxFailedTimes-1; attempt++ {
 		conn, err := fallback.DialContext(context.Background(), "tcp", M.Socksaddr{})
 		if err != nil {
 			t.Fatal(err)
@@ -265,7 +267,7 @@ func TestFallbackDialFailuresUseMihomoThreshold(t *testing.T) {
 		_ = conn.Close()
 	}
 	state := fallback.health[primary.Tag()]
-	if state.checked || state.failureCount != defaultFallbackMaxFailedAttempts-1 || fallback.Now() != primary.Tag() {
+	if state.checked || state.failureCount != fallback.maxFailedTimes-1 || fallback.Now() != primary.Tag() {
 		t.Fatalf("ordinary failures changed global state too early: checked=%v failures=%d now=%q", state.checked, state.failureCount, fallback.Now())
 	}
 	select {

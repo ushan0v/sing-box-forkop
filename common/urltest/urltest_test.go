@@ -46,3 +46,29 @@ func TestUnifiedDelayRespectsContextDeadline(t *testing.T) {
 		t.Fatalf("URL test exceeded context deadline: %v", elapsed)
 	}
 }
+
+func TestExpectedStatus(t *testing.T) {
+	expectedStatus, err := ParseExpectedStatus("200-299/304")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !expectedStatus.Contains(http.StatusNoContent) || !expectedStatus.Contains(http.StatusNotModified) || expectedStatus.Contains(http.StatusBadGateway) {
+		t.Fatal("expected status ranges were parsed incorrectly")
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	dialer := &testDialer{address: server.Listener.Addr().String()}
+	if _, err = URLTestWithExpectedStatus(context.Background(), server.URL, dialer, expectedStatus); err != nil {
+		t.Fatal(err)
+	}
+	rejectedStatus, err := ParseExpectedStatus("200")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = URLTestWithExpectedStatus(context.Background(), server.URL, dialer, rejectedStatus); err == nil {
+		t.Fatal("unexpected HTTP status was accepted")
+	}
+}
