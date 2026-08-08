@@ -2,6 +2,7 @@ package bandwidth
 
 import (
 	"context"
+	"io"
 	"net"
 	"strconv"
 	"sync"
@@ -191,7 +192,7 @@ func (s *UsersBandwidthStrategy) getStrategy(ctx context.Context, metadata *adap
 }
 
 type bwConnEntry struct {
-	conn net.Conn
+	conn io.Closer
 }
 
 type ManagerBandwidthStrategy struct {
@@ -251,7 +252,25 @@ func (s *ManagerBandwidthStrategy) wrapPacketConn(ctx context.Context, conn net.
 	if !ok {
 		return nil, E.New("user strategy not found: ", user)
 	}
-	return strategy.wrapPacketConn(ctx, conn, metadata, reverse)
+	wrapped, err := strategy.wrapPacketConn(ctx, conn, metadata, reverse)
+	if err != nil {
+		return nil, err
+	}
+	entry := &bwConnEntry{conn: conn}
+	s.mtx.Lock()
+	s.conns[user] = append(s.conns[user], entry)
+	s.mtx.Unlock()
+	return onclose.NewPacketConn(wrapped, func() {
+		s.mtx.Lock()
+		entries := s.conns[user]
+		for i, e := range entries {
+			if e == entry {
+				s.conns[user] = append(entries[:i], entries[i+1:]...)
+				break
+			}
+		}
+		s.mtx.Unlock()
+	}), nil
 }
 
 func (s *ManagerBandwidthStrategy) UpdateStrategies(strategies map[string]BandwidthStrategy) {

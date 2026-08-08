@@ -29,15 +29,16 @@ func RegisterServerEndpoint(registry *endpoint.Registry) {
 
 type ServerEndpoint struct {
 	outbound.Adapter
-	logger    logger.ContextLogger
-	inbounds  []adapter.Inbound
-	router    adapter.ConnectionRouterEx
-	address   IPv4
-	addresses map[uuid.UUID]IPv4
-	keys      map[IPv4]uuid.UUID
-	conns     map[IPv4]chan net.Conn
-	timeout   time.Duration
-	uotClient *uot.Client
+	logger         logger.ContextLogger
+	inbounds       []adapter.Inbound
+	router         adapter.ConnectionRouterEx
+	address        IPv4
+	addresses      map[uuid.UUID]IPv4
+	keys           map[IPv4]uuid.UUID
+	conns          map[IPv4]chan net.Conn
+	timeout        time.Duration
+	defaultGateway *netip.Addr
+	uotClient      *uot.Client
 }
 
 func NewServerEndpoint(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.VPNServerEndpointOptions) (adapter.Endpoint, error) {
@@ -50,6 +51,13 @@ func NewServerEndpoint(ctx context.Context, router adapter.Router, logger log.Co
 		logger:  logger,
 		router:  sbUot.NewRouter(router, logger),
 		address: address.As4(),
+	}
+	if options.DefaultGateway.IsValid() {
+		if !options.DefaultGateway.Is4() {
+			return nil, E.New("invalid default_gateway: ", options.DefaultGateway)
+		}
+		defaultGateway := options.DefaultGateway
+		server.defaultGateway = &defaultGateway
 	}
 	router = NewRouter(router, logger, server.connHandler)
 	inboundRegistry := service.FromContext[adapter.InboundRegistry](ctx)
@@ -124,6 +132,8 @@ func (s *ServerEndpoint) DialContext(ctx context.Context, network string, destin
 				Addr: Loopback,
 				Port: destination.Port,
 			}
+		} else if s.defaultGateway != nil {
+			gateway = s.defaultGateway
 		} else {
 			return nil, E.New("missing gateway")
 		}

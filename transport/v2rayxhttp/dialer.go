@@ -3,6 +3,7 @@ package xhttp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -110,15 +111,17 @@ func (c *DefaultDialerClient) OpenStream(ctx context.Context, url string, sessio
 	if body != nil {
 		method = c.options.GetNormalizedUplinkHTTPMethod() // stream-up/one
 	}
-	req, _ := http.NewRequestWithContext(context.WithoutCancel(ctx), method, url, body)
+	reqCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	req, _ := http.NewRequestWithContext(reqCtx, method, url, body)
 	FillStreamRequest(req, sessionId, "", c.options)
-	wrc = &WaitReadCloser{Wait: make(chan struct{})}
+	wrc = &WaitReadCloser{Wait: make(chan struct{}), Cancel: cancel}
 	go func() {
 		resp, err := c.client.Do(req)
 		if err != nil {
-			if !uploadOnly { // stream-down is enough
+			if !uploadOnly && !errors.Is(err, context.Canceled) { // stream-down is enough
 				c.Close()
 			}
+			cancel()
 			gotConn.Close()
 			common.Close(body)
 			wrc.Close()
@@ -128,6 +131,7 @@ func (c *DefaultDialerClient) OpenStream(ctx context.Context, url string, sessio
 			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close() // if it is called immediately, the upload will be interrupted also
 			common.Close(body)
+			cancel()
 			wrc.Close()
 			return
 		}
@@ -210,7 +214,8 @@ func (c *DefaultDialerClient) PostPacket(ctx context.Context, url string, sessio
 }
 
 type WaitReadCloser struct {
-	Wait chan struct{}
+	Wait   chan struct{}
+	Cancel context.CancelFunc
 	io.ReadCloser
 }
 
@@ -233,6 +238,9 @@ func (w *WaitReadCloser) Read(b []byte) (int, error) {
 }
 
 func (w *WaitReadCloser) Close() error {
+	if w.Cancel != nil {
+		w.Cancel()
+	}
 	if w.ReadCloser != nil {
 		return w.ReadCloser.Close()
 	}

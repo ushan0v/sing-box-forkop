@@ -106,7 +106,12 @@ func (h *Outbound) DialContext(ctx context.Context, network string, destination 
 	if err != nil {
 		return nil, err
 	}
-	return h.strategy.wrapConn(ctx, conn, adapter.ContextFrom(ctx), true)
+	wrappedConn, err := h.strategy.wrapConn(ctx, conn, adapter.ContextFrom(ctx), true)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return wrappedConn, nil
 }
 
 func (h *Outbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
@@ -114,12 +119,17 @@ func (h *Outbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (n
 	if err != nil {
 		return nil, err
 	}
-	return h.strategy.wrapPacketConn(ctx, conn, adapter.ContextFrom(ctx), true)
+	wrappedConn, err := h.strategy.wrapPacketConn(ctx, conn, adapter.ContextFrom(ctx), true)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return wrappedConn, nil
 }
 
 func (h *Outbound) NewConnectionEx(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
 	ctx = adapter.WithContext(ctx, &metadata)
-	conn, err := h.strategy.wrapConn(ctx, conn, &metadata, false)
+	wrappedConn, err := h.strategy.wrapConn(ctx, conn, &metadata, false)
 	if err != nil {
 		h.logger.ErrorContext(ctx, err)
 		N.CloseOnHandshakeFailure(conn, onClose, err)
@@ -127,7 +137,7 @@ func (h *Outbound) NewConnectionEx(ctx context.Context, conn net.Conn, metadata 
 	}
 	metadata.Inbound = h.Tag()
 	metadata.InboundType = h.Type()
-	h.router.RouteConnectionEx(ctx, conn, metadata, onClose)
+	h.router.RouteConnectionEx(ctx, wrappedConn, metadata, onClose)
 	return
 }
 

@@ -14,9 +14,8 @@
     {
       "type": "vpn-client",
       "tag": "vpn",
-      "address": "10.0.0.2",
-      "key": "1c9b2ccf-b0c0-4c26-868d-a55a4edad3fe",
-      "default_gateway": "10.0.0.3",
+      "address": "10.0.0.3",
+      "key": "3d74d616-2502-4c17-9cc3-92c366550f4f",
       "outbound": {
         "type": "vless",
         "tag": "vless-out",
@@ -27,13 +26,6 @@
       }
     }
   ],
-  "inbounds": [
-    {
-      "type": "mixed",
-      "tag": "mixed-in",
-      "listen_port": 7897
-    }
-  ],
   "outbounds": [
     {
       "type": "direct",
@@ -41,7 +33,8 @@
     }
   ],
   "route": {
-    "final": "vpn",
+    "final": "direct-out",
+    "default_domain_resolver": "default",
     "auto_detect_interface": true
   }
 }

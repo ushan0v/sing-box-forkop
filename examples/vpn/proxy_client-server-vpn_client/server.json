@@ -15,6 +15,7 @@
       "type": "vpn-server",
       "tag": "vpn",
       "address": "10.0.0.1",
+      "default_gateway": "10.0.0.2",
       "users": [
         {
           "address": "10.0.0.2",
@@ -47,8 +48,7 @@
     "rules": [
       {
         "inbound": "vless-in",
-        "outbound": "vpn",
-        "override_gateway": "10.0.0.2"
+        "outbound": "vpn"
       }
     ],
     "final": "direct-out",

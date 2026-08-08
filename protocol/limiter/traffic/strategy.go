@@ -2,6 +2,7 @@ package traffic
 
 import (
 	"context"
+	"io"
 	"net"
 	"sync"
 
@@ -37,11 +38,11 @@ func NewDefaultWrapStrategy(limiterStrategy TrafficLimiterStrategy, connWrapper 
 func (s *DefaultWrapStrategy) wrapConn(ctx context.Context, conn net.Conn, metadata *adapter.InboundContext, reverse bool) (net.Conn, error) {
 	limiter, err := s.limiterStrategy.getLimiter(ctx, metadata)
 	if err != nil {
-		return conn, err
+		return nil, err
 	}
 	_, err = limiter.Reserve(0)
 	if err != nil {
-		return conn, err
+		return nil, err
 	}
 	return s.connWrapper(ctx, conn, limiter, reverse), nil
 }
@@ -49,11 +50,11 @@ func (s *DefaultWrapStrategy) wrapConn(ctx context.Context, conn net.Conn, metad
 func (s *DefaultWrapStrategy) wrapPacketConn(ctx context.Context, conn net.PacketConn, metadata *adapter.InboundContext, reverse bool) (net.PacketConn, error) {
 	limiter, err := s.limiterStrategy.getLimiter(ctx, metadata)
 	if err != nil {
-		return conn, err
+		return nil, err
 	}
 	_, err = limiter.Reserve(0)
 	if err != nil {
-		return conn, err
+		return nil, err
 	}
 	return s.packetConnWrapper(ctx, conn, limiter, reverse), nil
 }
@@ -73,7 +74,7 @@ func (s *GlobalTrafficStrategy) getLimiter(ctx context.Context, metadata *adapte
 }
 
 type connEntry struct {
-	conn net.Conn
+	conn io.Closer
 }
 
 type ManagerTrafficStrategy struct {
@@ -94,7 +95,7 @@ func (s *ManagerTrafficStrategy) wrapConn(ctx context.Context, conn net.Conn, me
 	if err != nil {
 		return nil, err
 	}
-	wrapped, err := strategy.wrapConn(ctx, conn, metadata, reverse)
+	wrappedConn, err := strategy.wrapConn(ctx, conn, metadata, reverse)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +103,7 @@ func (s *ManagerTrafficStrategy) wrapConn(ctx context.Context, conn net.Conn, me
 	s.mtx.Lock()
 	s.conns[user] = append(s.conns[user], entry)
 	s.mtx.Unlock()
-	return onclose.NewConn(wrapped, func() {
+	return onclose.NewConn(wrappedConn, func() {
 		s.mtx.Lock()
 		entries := s.conns[user]
 		for i, e := range entries {
@@ -116,11 +117,29 @@ func (s *ManagerTrafficStrategy) wrapConn(ctx context.Context, conn net.Conn, me
 }
 
 func (s *ManagerTrafficStrategy) wrapPacketConn(ctx context.Context, conn net.PacketConn, metadata *adapter.InboundContext, reverse bool) (net.PacketConn, error) {
-	strategy, _, err := s.getStrategy(ctx, metadata)
+	strategy, user, err := s.getStrategy(ctx, metadata)
 	if err != nil {
 		return nil, err
 	}
-	return strategy.wrapPacketConn(ctx, conn, metadata, reverse)
+	wrappedConn, err := strategy.wrapPacketConn(ctx, conn, metadata, reverse)
+	if err != nil {
+		return nil, err
+	}
+	entry := &connEntry{conn: conn}
+	s.mtx.Lock()
+	s.conns[user] = append(s.conns[user], entry)
+	s.mtx.Unlock()
+	return onclose.NewPacketConn(wrappedConn, func() {
+		s.mtx.Lock()
+		entries := s.conns[user]
+		for i, e := range entries {
+			if e == entry {
+				s.conns[user] = append(entries[:i], entries[i+1:]...)
+				break
+			}
+		}
+		s.mtx.Unlock()
+	}), nil
 }
 
 func (s *ManagerTrafficStrategy) getStrategy(ctx context.Context, metadata *adapter.InboundContext) (TrafficStrategy, string, error) {

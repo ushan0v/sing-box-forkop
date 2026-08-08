@@ -29,13 +29,14 @@ func RegisterClientEndpoint(registry *endpoint.Registry) {
 
 type ClientEndpoint struct {
 	outbound.Adapter
-	ctx       context.Context
-	outbound  adapter.Outbound
-	router    adapter.ConnectionRouterEx
-	logger    logger.ContextLogger
-	address   IPv4
-	key       uuid.UUID
-	uotClient *uot.Client
+	ctx            context.Context
+	outbound       adapter.Outbound
+	router         adapter.ConnectionRouterEx
+	logger         logger.ContextLogger
+	address        IPv4
+	key            uuid.UUID
+	defaultGateway IPv4
+	uotClient      *uot.Client
 }
 
 func NewClientEndpoint(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.VPNClientEndpointOptions) (adapter.Endpoint, error) {
@@ -47,13 +48,21 @@ func NewClientEndpoint(ctx context.Context, router adapter.Router, logger log.Co
 	if err != nil {
 		return nil, err
 	}
+	defaultGateway := Loopback.As4()
+	if options.DefaultGateway.IsValid() {
+		if !options.DefaultGateway.Is4() {
+			return nil, E.New("invalid default_gateway: ", options.DefaultGateway)
+		}
+		defaultGateway = options.DefaultGateway.As4()
+	}
 	client := &ClientEndpoint{
-		Adapter: outbound.NewAdapter(C.TypeVPNClient, tag, []string{N.NetworkTCP, N.NetworkUDP}, []string{}),
-		ctx:     ctx,
-		router:  sbUot.NewRouter(router, logger),
-		logger:  logger,
-		address: address.As4(),
-		key:     key,
+		Adapter:        outbound.NewAdapter(C.TypeVPNClient, tag, []string{N.NetworkTCP, N.NetworkUDP}, []string{}),
+		ctx:            ctx,
+		router:         sbUot.NewRouter(router, logger),
+		logger:         logger,
+		address:        address.As4(),
+		key:            key,
+		defaultGateway: defaultGateway,
 	}
 	outboundRegistry := service.FromContext[adapter.OutboundRegistry](ctx)
 	outbound, err := outboundRegistry.CreateOutbound(ctx, router, logger, options.Outbound.Tag, options.Outbound.Type, options.Outbound.Options)
@@ -102,7 +111,7 @@ func (c *ClientEndpoint) DialContext(ctx context.Context, network string, destin
 	if err != nil {
 		return nil, err
 	}
-	gateway := Loopback.As4()
+	gateway := c.defaultGateway
 	if metadata := adapter.ContextFrom(ctx); metadata != nil {
 		if metadata.Gateway != nil {
 			gateway = metadata.Gateway.As4()
