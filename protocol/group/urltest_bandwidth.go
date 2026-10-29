@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -38,15 +39,19 @@ type BandwidthStatus struct {
 	Running     bool                       `json:"running"`
 	MinimumMbps float64                    `json:"minimum_mbps"`
 	Results     map[string]BandwidthResult `json:"results"`
+	Strategy    string                     `json:"strategy"`
+	Mode        string                     `json:"mode,omitempty"`
 }
 
 type urlTestBandwidth struct {
-	options    option.URLTestBandwidthOptions
-	access     sync.Mutex
-	running    bool
-	lastRun    time.Time
-	results    map[string]BandwidthResult
-	generation uint64
+	options      option.URLTestBandwidthOptions
+	access       sync.Mutex
+	running      bool
+	lastRun      time.Time
+	lastSelected time.Time
+	mode         string
+	results      map[string]BandwidthResult
+	generation   uint64
 }
 
 // Router throughput is a shared resource: groups must not benchmark each other.
@@ -57,12 +62,30 @@ func newURLTestBandwidth(options *option.URLTestBandwidthOptions) (*urlTestBandw
 		return nil, nil
 	}
 	o := *options
+	if o.Strategy == "" {
+		o.Strategy = "qualify"
+	}
+	if o.Strategy != "qualify" && o.Strategy != "throughput" {
+		return nil, errors.New("bandwidth_test.strategy must be qualify or throughput")
+	}
+	if o.SpeedTolerance == 0 {
+		o.SpeedTolerance = 20
+	}
+	if o.SpeedTolerance > 100 {
+		return nil, errors.New("bandwidth_test.speed_tolerance must be at most 100 percent")
+	}
 	u, err := url.Parse(o.URL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.Fragment != "" {
 		return nil, errors.New("bandwidth_test.url must be an HTTP(S) URL without credentials or fragment")
 	}
 	if o.Interval == 0 {
 		o.Interval = badoption.Duration(6 * time.Hour)
+	}
+	if o.SelectedInterval == 0 {
+		o.SelectedInterval = badoption.Duration(10 * time.Minute)
+	}
+	if o.Adaptive && (time.Duration(o.SelectedInterval) < time.Minute || o.SelectedInterval > o.Interval) {
+		return nil, errors.New("bandwidth_test.selected_interval must be between 1m and interval")
 	}
 	if o.Timeout == 0 {
 		o.Timeout = badoption.Duration(10 * time.Second)
@@ -104,6 +127,7 @@ func (s *URLTest) BandwidthStatus() *BandwidthStatus {
 	b.access.Lock()
 	defer b.access.Unlock()
 	status := &BandwidthStatus{Running: b.running, MinimumMbps: b.options.MinimumMbps, Results: make(map[string]BandwidthResult)}
+	status.Strategy, status.Mode = b.options.Strategy, b.mode
 	for _, member := range members {
 		if result, ok := b.results[member.Tag()]; ok {
 			result.Admitted = result.Admitted && time.Since(result.Time) <= 2*time.Duration(b.options.Interval)
@@ -126,22 +150,38 @@ func (g *URLTestGroup) startBandwidthTest(force bool) bool {
 	}
 	g.access.RLock()
 	members := append([]adapter.Outbound(nil), g.outbounds...)
+	selected := []adapter.Outbound{}
+	for _, member := range []adapter.Outbound{g.selectedOutboundTCP, g.selectedOutboundUDP} {
+		if member != nil && !common.Any(selected, func(o adapter.Outbound) bool { return o.Tag() == member.Tag() }) {
+			selected = append(selected, member)
+		}
+	}
 	g.access.RUnlock()
 	if len(members) == 0 {
 		return false
 	}
 	b.access.Lock()
-	if b.running || (!force && time.Since(b.lastRun) < time.Duration(b.options.Interval)) {
+	full, chosen := b.plan(time.Now(), force, len(selected) > 0)
+	if b.running || (!full && !chosen) {
 		b.access.Unlock()
 		return false
 	}
-	b.running, b.lastRun = true, time.Now()
+	b.running = true
+	if full {
+		b.lastRun = time.Now()
+		b.mode = "full"
+	} else {
+		members = selected
+		b.mode = "selected"
+	}
+	b.lastSelected = time.Now()
 	generation := b.generation
 	b.access.Unlock()
 	go func() {
 		defer func() {
 			b.access.Lock()
 			b.running = false
+			b.mode = ""
 			retry := b.generation != generation
 			b.access.Unlock()
 			if retry {
@@ -154,14 +194,15 @@ func (g *URLTestGroup) startBandwidthTest(force bool) bool {
 		case <-g.ctx.Done():
 			return
 		}
-		// Retire removed subscription nodes, including their admission counters.
+		// Retire removed subscription nodes only during a complete sweep.
 		b.access.Lock()
 		for tag := range b.results {
-			if !common.Any(members, func(o adapter.Outbound) bool { return o.Tag() == tag }) {
+			if full && !common.Any(members, func(o adapter.Outbound) bool { return o.Tag() == tag }) {
 				delete(b.results, tag)
 			}
 		}
 		b.access.Unlock()
+		degraded := false
 		for _, member := range members {
 			if g.ctx.Err() != nil {
 				return
@@ -175,7 +216,7 @@ func (g *URLTestGroup) startBandwidthTest(force bool) bool {
 			}
 			b.access.Lock()
 			attempts := 1
-			if b.results[member.Tag()].Time.IsZero() {
+			if b.results[member.Tag()].Time.IsZero() || !full {
 				attempts = b.options.Confirmations
 			}
 			b.access.Unlock()
@@ -196,7 +237,51 @@ func (g *URLTestGroup) startBandwidthTest(force bool) bool {
 					return
 				}
 				b.record(member.Tag(), result)
+				observation := b.results[member.Tag()]
 				b.access.Unlock()
+				g.performUpdateCheck()
+				if !full {
+					if observation.bad >= b.options.Confirmations {
+						degraded = true
+						break
+					}
+					if observation.bad == 0 || result.Error == "HTTP status 429" {
+						break
+					}
+				}
+			}
+		}
+		if degraded {
+			b.access.Lock()
+			b.mode = "recovery"
+			b.access.Unlock()
+			for _, member := range g.bandwidthBackups(members) {
+				for attempt := 0; attempt < b.options.Confirmations; attempt++ {
+					select {
+					case <-time.After(time.Second):
+					case <-g.ctx.Done():
+						return
+					}
+					result := measureBandwidth(g.ctx, member, b.options)
+					if g.ctx.Err() != nil {
+						return
+					}
+					b.access.Lock()
+					if b.generation != generation {
+						b.access.Unlock()
+						return
+					}
+					b.record(member.Tag(), result)
+					r := b.results[member.Tag()]
+					b.access.Unlock()
+					g.performUpdateCheck()
+					if result.Error == "HTTP status 429" {
+						break
+					}
+					if r.Admitted && result.Error == "" && r.Mbps >= b.options.MinimumMbps {
+						return
+					}
+				}
 			}
 		}
 		if g.ctx.Err() == nil {
@@ -204,6 +289,46 @@ func (g *URLTestGroup) startBandwidthTest(force bool) bool {
 		}
 	}()
 	return true
+}
+
+// access must be held by the caller. Scheduling follows the normal URLTest
+// activity ticks; selected checks never postpone a complete/manual sweep.
+func (b *urlTestBandwidth) plan(now time.Time, force, hasSelected bool) (bool, bool) {
+	full := force || now.Sub(b.lastRun) >= time.Duration(b.options.Interval)
+	return full, !full && b.options.Adaptive && hasSelected && now.Sub(b.lastSelected) >= time.Duration(b.options.SelectedInterval)
+}
+
+// Recheck at most three reachable reserves, preferring their measured speed.
+func (g *URLTestGroup) bandwidthBackups(excluded []adapter.Outbound) []adapter.Outbound {
+	g.access.RLock()
+	defer g.access.RUnlock()
+	b := g.bandwidth
+	b.access.Lock()
+	defer b.access.Unlock()
+	members := []adapter.Outbound{}
+	latencies := make(map[string]uint16)
+	for _, member := range g.outbounds {
+		if common.Any(excluded, func(o adapter.Outbound) bool { return o.Tag() == member.Tag() }) {
+			continue
+		}
+		if _, group := member.(adapter.OutboundGroup); group {
+			continue
+		}
+		history := g.history.LoadURLTestHistory(RealTag(member, N.NetworkTCP))
+		if !common.Contains(member.Network(), N.NetworkTCP) || history == nil {
+			continue
+		}
+		members = append(members, member)
+		latencies[member.Tag()] = history.Delay
+	}
+	sort.SliceStable(members, func(i, j int) bool {
+		a, c := b.results[members[i].Tag()].Mbps, b.results[members[j].Tag()].Mbps
+		if a != c {
+			return a > c
+		}
+		return latencies[members[i].Tag()] < latencies[members[j].Tag()]
+	})
+	return members[:min(3, len(members))]
 }
 
 // access must be held by the caller.
@@ -255,6 +380,18 @@ func (g *URLTestGroup) bandwidthCandidates(network string) map[string]bool {
 			admitted = make(map[string]bool)
 		}
 		admitted[member.Tag()] = true
+	}
+	if b.options.Strategy == "throughput" && len(admitted) > 0 {
+		best := 0.0
+		for tag := range admitted {
+			best = max(best, b.results[tag].Mbps)
+		}
+		floor := best / (1 + float64(b.options.SpeedTolerance)/100)
+		for tag := range admitted {
+			if b.results[tag].Mbps < floor {
+				delete(admitted, tag)
+			}
+		}
 	}
 	return admitted
 }

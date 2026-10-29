@@ -19,15 +19,19 @@ type URLTestOutboundOptions struct {
 	BandwidthTest             *URLTestBandwidthOptions `json:"bandwidth_test,omitempty"`
 }
 
-// Bandwidth qualification is opt-in; latency still chooses among qualified members.
+// Bandwidth testing is opt-in; the policy can qualify or rank members by speed.
 type URLTestBandwidthOptions struct {
-	Enabled       bool               `json:"enabled,omitempty"`
-	URL           string             `json:"url,omitempty"`
-	Interval      badoption.Duration `json:"interval,omitempty"`
-	Timeout       badoption.Duration `json:"timeout,omitempty"`
-	MaxBytes      int64              `json:"max_bytes,omitempty"`
-	MinimumMbps   float64            `json:"minimum_mbps,omitempty"`
-	Confirmations int                `json:"confirmations,omitempty"`
+	Enabled          bool               `json:"enabled,omitempty"`
+	URL              string             `json:"url,omitempty"`
+	Interval         badoption.Duration `json:"interval,omitempty"`
+	Timeout          badoption.Duration `json:"timeout,omitempty"`
+	MaxBytes         int64              `json:"max_bytes,omitempty"`
+	MinimumMbps      float64            `json:"minimum_mbps,omitempty"`
+	Confirmations    int                `json:"confirmations,omitempty"`
+	Adaptive         bool               `json:"adaptive,omitempty"`
+	SelectedInterval badoption.Duration `json:"selected_interval,omitempty"`
+	Strategy         string             `json:"strategy,omitempty"`
+	SpeedTolerance   uint16             `json:"speed_tolerance,omitempty"`
 }
 
 type FallbackOutboundOptions struct {

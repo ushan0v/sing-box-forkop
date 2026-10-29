@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -183,4 +184,129 @@ func TestBandwidthRateLimitDoesNotDisqualifyOrRenew(t *testing.T) {
 	if !r.Admitted || !r.Time.Equal(at) || r.Mbps != 100 || r.bad != 0 {
 		t.Fatalf("rate limiting changed the member rating: %+v", r)
 	}
+}
+
+func TestBandwidthThroughputRanksBeforeLatency(t *testing.T) {
+	estonia := newTypedTestOutbound(C.TypeVLESS, "estonia")
+	norway := newTypedTestOutbound(C.TypeVLESS, "norway")
+	g, _ := NewURLTestGroup(context.Background(), nil, nil, []adapter.Outbound{norway, estonia}, "", nil, 0, 10, 0, false)
+	defer g.Close()
+	o := bandwidthOptions()
+	o.Strategy = "throughput"
+	g.bandwidth, _ = newURLTestBandwidth(o)
+	g.selectedOutboundTCP = norway
+	for tag, speed := range map[string]float64{"estonia": 229, "norway": 167} {
+		for range 2 {
+			g.bandwidth.record(tag, BandwidthResult{Time: time.Now(), Mbps: speed})
+		}
+	}
+	g.history.StoreURLTestHistory("estonia", &adapter.URLTestHistory{Time: time.Now(), Delay: 80})
+	g.history.StoreURLTestHistory("norway", &adapter.URLTestHistory{Time: time.Now(), Delay: 20})
+	if got, _ := g.Select(N.NetworkTCP); got != estonia {
+		t.Fatal("latency beat significantly higher throughput")
+	}
+	// Within the configured 20% band latency is the secondary criterion.
+	g.bandwidth.record("norway", BandwidthResult{Time: time.Now(), Mbps: 210})
+	if got, _ := g.Select(N.NetworkTCP); got != norway {
+		t.Fatal("similar-speed candidates ignored latency")
+	}
+	g.history.DeleteURLTestHistory("estonia")
+	if got, _ := g.Select(N.NetworkTCP); got != norway {
+		t.Fatal("dead fast node excluded reachable reserve")
+	}
+}
+
+func TestAdaptiveBandwidthSchedule(t *testing.T) {
+	o := bandwidthOptions()
+	o.Adaptive = true
+	b, err := newURLTestBandwidth(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	b.lastRun = now
+	b.lastSelected = now
+	if full, selected := b.plan(now.Add(9*time.Minute), false, true); full || selected {
+		t.Fatal("selected check ran early")
+	}
+	if full, selected := b.plan(now.Add(10*time.Minute), false, true); full || !selected {
+		t.Fatal("selected check did not become due")
+	}
+	b.lastSelected = now.Add(5 * time.Hour)
+	if full, _ := b.plan(now.Add(6*time.Hour), false, true); !full {
+		t.Fatal("selected probes postponed full sweep")
+	}
+	if full, _ := b.plan(now, true, true); !full {
+		t.Fatal("manual request did not force full sweep")
+	}
+	if _, selected := b.plan(now.Add(time.Hour), false, false); selected {
+		t.Fatal("scheduled check without selected node")
+	}
+	o.SelectedInterval = badoption.Duration(7 * time.Hour)
+	if _, err := newURLTestBandwidth(o); err == nil {
+		t.Fatal("accepted selected interval beyond full interval")
+	}
+}
+
+type adaptiveTestOutbound struct {
+	outboundAdapter.Adapter
+	address string
+	dials   atomic.Int32
+}
+
+func (o *adaptiveTestOutbound) DialContext(ctx context.Context, network string, _ M.Socksaddr) (net.Conn, error) {
+	o.dials.Add(1)
+	return (&net.Dialer{}).DialContext(ctx, network, o.address)
+}
+func (o *adaptiveTestOutbound) ListenPacket(context.Context, M.Socksaddr) (net.PacketConn, error) {
+	return nil, fmt.Errorf("unused")
+}
+
+func TestAdaptiveBandwidthConfirmsDegradationAndTestsReserve(t *testing.T) {
+	var selectedRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if selectedRequests.Add(1) <= 2 {
+			w.WriteHeader(503)
+			return
+		}
+		_, _ = w.Write([]byte(strings.Repeat("x", 1024*1024)))
+	}))
+	defer server.Close()
+	slow := &adaptiveTestOutbound{Adapter: outboundAdapter.NewAdapter(C.TypeVLESS, "slow", []string{N.NetworkTCP}, nil), address: server.Listener.Addr().String()}
+	fast := &adaptiveTestOutbound{Adapter: outboundAdapter.NewAdapter(C.TypeVLESS, "fast", []string{N.NetworkTCP}, nil), address: server.Listener.Addr().String()}
+	g, _ := NewURLTestGroup(context.Background(), nil, nil, []adapter.Outbound{slow, fast}, "", nil, 0, 10, 0, false)
+	defer g.Close()
+	o := bandwidthOptions()
+	o.Adaptive = true
+	o.Strategy = "throughput"
+	o.URL = server.URL
+	o.MaxBytes = 1024 * 1024
+	g.bandwidth, _ = newURLTestBandwidth(o)
+	g.bandwidth.lastRun = time.Now()
+	g.selectedOutboundTCP = slow
+	for _, member := range []adapter.Outbound{slow, fast} {
+		g.history.StoreURLTestHistory(member.Tag(), &adapter.URLTestHistory{Time: time.Now(), Delay: 10})
+		for range 2 {
+			g.bandwidth.record(member.Tag(), BandwidthResult{Time: time.Now(), Mbps: 100})
+		}
+	}
+	if !g.startBandwidthTest(false) {
+		t.Fatal("adaptive probe did not start")
+	}
+	for deadline := time.Now().Add(8 * time.Second); time.Now().Before(deadline); {
+		g.bandwidth.access.Lock()
+		running := g.bandwidth.running
+		g.bandwidth.access.Unlock()
+		if !running {
+			if slow.dials.Load() != 2 || fast.dials.Load() != 1 {
+				t.Fatalf("unexpected selected/reserve probes: %d/%d", slow.dials.Load(), fast.dials.Load())
+			}
+			if got, _ := g.Select(N.NetworkTCP); got != fast {
+				t.Fatal("degraded selected server retained")
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("adaptive recovery did not finish")
 }

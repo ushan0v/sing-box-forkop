@@ -41,6 +41,29 @@ HTTP 429 is inconclusive: it preserves the last measurement and its original
 timestamp, so an origin's rate limit neither disqualifies a node nor renews an
 old qualification.
 
+## Throughput ranking and adaptive checks
+
+`strategy` defaults to `qualify`, preserving latency selection among admitted
+members. Set `strategy: "throughput"` to rank admitted reachable members by
+measured Mbps first. `speed_tolerance` defaults to 20 percent: candidates at
+least `best_mbps / 1.2` form the comparable-speed band; ordinary latency
+hysteresis chooses within that band. For 229 versus 167 Mbps only the faster
+member is in the band. For 229 versus 210 Mbps latency can decide. If no member
+qualifies the ordinary latency reserve still applies.
+
+`adaptive: true` enables intermediate checks of the selected TCP/UDP members
+(duplicates measured once). `selected_interval` defaults to `10m` and must be
+between `1m` and the full `interval`. Checks run at the next active URLTest tick,
+so a `3m` latency tick normally checks a `10m` selected interval about every
+12 minutes. Successful selected checks take one sample. A failed one is retried
+within the same job up to `confirmations`, so disqualification need not wait for
+another interval. On confirmed degradation up to three reachable reserves are
+rechecked, preferring measured throughput, stopping once one passes admission.
+Full/manual sweeps keep their own schedule; intermediate checks do not postpone
+them. Provider changes, idle suspension and cancellation retain their normal
+behavior. Status includes `strategy` and a running `mode` (`full`, `selected`,
+or `recovery`).
+
 Clash API `/proxies` and `/proxies/{encoded-tag}` include a `bandwidth` object
 only when enabled: `running`, `minimum_mbps`, and `results` keyed by member tag.
 Each result has `time`, `mbps`, `bytes`, `admitted`, and an optional `error`.
