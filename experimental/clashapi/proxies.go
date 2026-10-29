@@ -31,6 +31,7 @@ func proxyRouter(server *Server, router adapter.Router) http.Handler {
 		r.Get("/link", getProxyLink(server))
 		r.Get("/exit", getProxyExit(server))
 		r.Get("/delay", getProxyDelay(server))
+		r.Post("/bandwidth", startProxyBandwidthTest)
 		r.Put("/", updateProxy)
 	})
 	return r
@@ -116,7 +117,25 @@ func proxyInfo(server *Server, detour adapter.Outbound) *badjson.JSONObject {
 		info.Put("groups", fallback.Groups())
 		info.Put("fixed", fallback.Fixed())
 	}
+	if urlTest, ok := detour.(*group.URLTest); ok {
+		if status := urlTest.BandwidthStatus(); status != nil {
+			info.Put("bandwidth", status)
+		}
+	}
 	return &info
+}
+
+func startProxyBandwidthTest(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	proxy, ok := r.Context().Value(CtxKeyProxy).(*group.URLTest)
+	if !ok || proxy.BandwidthStatus() == nil {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, newError("Bandwidth qualification is not enabled for this URLTest"))
+		return
+	}
+	proxy.StartBandwidthTest()
+	render.Status(r, http.StatusAccepted)
+	render.JSON(w, r, proxy.BandwidthStatus())
 }
 
 func getProxies(server *Server) func(w http.ResponseWriter, r *http.Request) {

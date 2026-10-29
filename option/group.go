@@ -10,12 +10,24 @@ type SelectorOutboundOptions struct {
 
 type URLTestOutboundOptions struct {
 	GroupCommonOption
-	URL                       string             `json:"url,omitempty"`
-	ExpectedStatus            string             `json:"expected_status,omitempty"`
-	Interval                  badoption.Duration `json:"interval,omitempty"`
-	Tolerance                 uint16             `json:"tolerance,omitempty"`
-	IdleTimeout               badoption.Duration `json:"idle_timeout,omitempty"`
-	InterruptExistConnections bool               `json:"interrupt_exist_connections,omitempty"`
+	URL                       string                   `json:"url,omitempty"`
+	ExpectedStatus            string                   `json:"expected_status,omitempty"`
+	Interval                  badoption.Duration       `json:"interval,omitempty"`
+	Tolerance                 uint16                   `json:"tolerance,omitempty"`
+	IdleTimeout               badoption.Duration       `json:"idle_timeout,omitempty"`
+	InterruptExistConnections bool                     `json:"interrupt_exist_connections,omitempty"`
+	BandwidthTest             *URLTestBandwidthOptions `json:"bandwidth_test,omitempty"`
+}
+
+// Bandwidth qualification is opt-in; latency still chooses among qualified members.
+type URLTestBandwidthOptions struct {
+	Enabled       bool               `json:"enabled,omitempty"`
+	URL           string             `json:"url,omitempty"`
+	Interval      badoption.Duration `json:"interval,omitempty"`
+	Timeout       badoption.Duration `json:"timeout,omitempty"`
+	MaxBytes      int64              `json:"max_bytes,omitempty"`
+	MinimumMbps   float64            `json:"minimum_mbps,omitempty"`
+	Confirmations int                `json:"confirmations,omitempty"`
 }
 
 type FallbackOutboundOptions struct {

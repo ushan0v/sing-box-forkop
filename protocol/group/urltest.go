@@ -49,6 +49,7 @@ type URLTest struct {
 	tolerance                    uint16
 	idleTimeout                  time.Duration
 	group                        *URLTestGroup
+	bandwidth                    *urlTestBandwidth
 	checkAccess                  sync.Mutex
 	interruptExternalConnections bool
 	access                       sync.RWMutex
@@ -71,6 +72,10 @@ func NewURLTest(ctx context.Context, router adapter.Router, logger log.ContextLo
 	if err != nil {
 		return nil, E.Cause(err, "invalid URLTest expected_status")
 	}
+	bandwidth, err := newURLTestBandwidth(options.BandwidthTest)
+	if err != nil {
+		return nil, err
+	}
 	outbound := &URLTest{
 		Adapter:                      outbound.NewAdapter(C.TypeURLTest, tag, []string{N.NetworkTCP, N.NetworkUDP}, options.Outbounds),
 		ctx:                          ctx,
@@ -79,6 +84,7 @@ func NewURLTest(ctx context.Context, router adapter.Router, logger log.ContextLo
 		tags:                         options.Outbounds,
 		link:                         options.URL,
 		expectedStatus:               expectedStatus,
+		bandwidth:                    bandwidth,
 		interval:                     time.Duration(options.Interval),
 		tolerance:                    options.Tolerance,
 		idleTimeout:                  time.Duration(options.IdleTimeout),
@@ -158,6 +164,7 @@ func (s *URLTest) start() (err error) {
 		return err
 	}
 	s.group = group
+	s.group.bandwidth = s.bandwidth
 	return nil
 }
 
@@ -360,6 +367,7 @@ func (s *URLTest) onProviderUpdated(tag string) error {
 	}
 	s.tags = tags
 	s.group.access.Lock()
+	previousMembers := s.group.outbounds
 	s.group.outbounds = outbounds
 	if s.group.selectedOutboundTCP != nil {
 		s.group.selectedOutboundTCP = outboundByTag(outbounds, s.group.selectedOutboundTCP.Tag(), N.NetworkTCP)
@@ -369,6 +377,17 @@ func (s *URLTest) onProviderUpdated(tag string) error {
 	}
 	if s.group.ticker != nil {
 		s.group.ticker.Reset(s.group.interval)
+	}
+	if b := s.group.bandwidth; b != nil && !slices.Equal(previousMembers, outbounds) {
+		b.access.Lock()
+		b.generation++
+		b.lastRun = time.Time{}
+		for member := range b.results {
+			if outboundByTag(previousMembers, member, N.NetworkTCP) != outboundByTag(outbounds, member, N.NetworkTCP) {
+				delete(b.results, member)
+			}
+		}
+		b.access.Unlock()
 	}
 	s.group.access.Unlock()
 	ctx, cancel := context.WithCancel(s.ctx)
@@ -383,6 +402,8 @@ func (s *URLTest) onProviderUpdated(tag string) error {
 
 type URLTestGroup struct {
 	ctx                          context.Context
+	cancel                       context.CancelFunc
+	bandwidth                    *urlTestBandwidth
 	outbound                     adapter.OutboundManager
 	pause                        pause.Manager
 	pauseCallback                *list.Element[pause.Callback]
@@ -428,8 +449,10 @@ func NewURLTestGroup(ctx context.Context, outboundManager adapter.OutboundManage
 	if coordinator == nil {
 		coordinator = urltest.NewCoordinator()
 	}
+	ctx, cancel := context.WithCancel(ctx)
 	return &URLTestGroup{
 		ctx:                          ctx,
+		cancel:                       cancel,
 		outbound:                     outboundManager,
 		logger:                       logger,
 		outbounds:                    outbounds,
@@ -515,6 +538,9 @@ func (g *URLTestGroup) Touch() {
 }
 
 func (g *URLTestGroup) Close() error {
+	if g.cancel != nil {
+		g.cancel()
+	}
 	g.access.Lock()
 	defer g.access.Unlock()
 	if g.ticker == nil {
@@ -535,18 +561,19 @@ func (g *URLTestGroup) Select(network string) (adapter.Outbound, bool) {
 }
 
 func (g *URLTestGroup) selectOutbound(network string) (adapter.Outbound, bool) {
+	qualified := g.bandwidthCandidates(network)
 	var minDelay uint16
 	var minOutbound adapter.Outbound
 	switch network {
 	case N.NetworkTCP:
-		if g.selectedOutboundTCP != nil {
+		if g.selectedOutboundTCP != nil && (qualified == nil || qualified[g.selectedOutboundTCP.Tag()]) {
 			if history := g.history.LoadURLTestHistory(RealTag(g.selectedOutboundTCP, N.NetworkTCP)); history != nil {
 				minOutbound = g.selectedOutboundTCP
 				minDelay = history.Delay
 			}
 		}
 	case N.NetworkUDP:
-		if g.selectedOutboundUDP != nil {
+		if g.selectedOutboundUDP != nil && (qualified == nil || qualified[g.selectedOutboundUDP.Tag()]) {
 			if history := g.history.LoadURLTestHistory(RealTag(g.selectedOutboundUDP, N.NetworkUDP)); history != nil {
 				minOutbound = g.selectedOutboundUDP
 				minDelay = history.Delay
@@ -554,6 +581,9 @@ func (g *URLTestGroup) selectOutbound(network string) (adapter.Outbound, bool) {
 		}
 	}
 	for _, detour := range g.outbounds {
+		if qualified != nil && !qualified[detour.Tag()] {
+			continue
+		}
 		if !common.Contains(detour.Network(), network) {
 			continue
 		}
@@ -676,6 +706,7 @@ func (g *URLTestGroup) urlTest(ctx context.Context, force bool) (map[string]uint
 	b.Wait()
 	if g.ctx.Err() == nil {
 		g.performUpdateCheck()
+		g.startBandwidthTest(false)
 	}
 	return result, nil
 }
