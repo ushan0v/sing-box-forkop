@@ -25,7 +25,7 @@ func ParseRawSubscription(_ context.Context, content string) (subscription.Resul
 	if !recognized {
 		return subscription.Result{}, subscription.ErrUnrecognized
 	}
-	collector := subscription.NewCollector("subscription")
+	collector := subscription.NewCollector("share link")
 	for index, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
