@@ -93,6 +93,18 @@ func TestLinkXHTTPForms(t *testing.T) {
 	}
 }
 
+// 3x-ui's subscription copies the panel's XMUX block into extra with an unset range as "",
+// which Xray reads as 0.
+func TestLinkXHTTPEmptyRangeIsZero(t *testing.T) {
+	extra := `{"mode":"auto","xmux":{"maxConcurrency":"","maxConnections":3,"cMaxReuseTimes":0,` +
+		`"hMaxRequestTimes":"600-900","hMaxReusableSecs":"1800-3000","hKeepAlivePeriod":0}}`
+	link := "vless://" + xrayTestUUID + "@example.org:443?security=tls&sni=sni.example&type=xhttp&path=%2F&extra=" + url.QueryEscape(extra) + "#n"
+	xmux := parsedVLESS(t, link).Transport.XHTTPOptions.Xmux
+	if xmux == nil || xmux.MaxConcurrency != (option.Range[int]{}) || xmux.MaxConnections != (option.Range[int]{From: 3, To: 3}) {
+		t.Errorf("xmux %+v", xmux)
+	}
+}
+
 func TestLinkTLSOfOtherClients(t *testing.T) {
 	const list = "AEX+DQBBtwAgACBnq8/sMmD3yl6v6TOKr4WgJz6Kj0nSUa8tR7+Tdbm5HwAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA="
 	base := "vless://" + xrayTestUUID + "@example.org:443?security=tls&sni=sni.example"

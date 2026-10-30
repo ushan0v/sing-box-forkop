@@ -81,7 +81,7 @@ func unmarshalNumber(content []byte) (int64, error) {
 }
 
 // Range is a range of whole numbers as generators write one: a number, "from-to" or an object, a
-// whole number also with a fraction (100.0, as Python writes a float).
+// whole number also with a fraction (100.0, as Python writes a float), and "" as 0, as Xray reads it.
 type Range option.Range[int]
 
 func (r *Range) UnmarshalJSON(content []byte) error {
@@ -92,7 +92,12 @@ func (r *Range) UnmarshalJSON(content []byte) error {
 	)
 	switch {
 	case json.Unmarshal(content, &text) == nil:
-		from, to, isRange := strings.Cut(strings.TrimSpace(text), "-")
+		text = strings.TrimSpace(text)
+		if text == "" {
+			*r = Range{}
+			return nil
+		}
+		from, to, isRange := strings.Cut(text, "-")
 		if !isRange {
 			to = from
 		}
