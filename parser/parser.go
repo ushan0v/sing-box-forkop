@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/sagernet/sing-box/adapter/provider"
+	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/parser/clash"
 	"github.com/sagernet/sing-box/parser/raw"
 	"github.com/sagernet/sing-box/parser/singbox"
@@ -55,9 +56,27 @@ func ParseSubscription(ctx context.Context, content string) (subscription.Result
 			}
 			return result, E.New("no server of the ", result.Format, " subscription could be imported")
 		}
+		if notes := placeholderNotes(result.Outbounds); notes != nil {
+			result.Outbounds = nil
+			return result, E.New("the ", result.Format, " subscription lists no server, only notes: ", strings.Join(notes, "; "))
+		}
 		return result, nil
 	}
 	return subscription.Result{}, E.New("unrecognized subscription format")
+}
+
+// placeholderNotes returns the names of the servers when every one is at the unspecified address:
+// Remnawave sends such entries in place of the servers, each name a line of its notice.
+func placeholderNotes(outbounds []option.Outbound) []string {
+	notes := make([]string, 0, len(outbounds))
+	for _, outbound := range outbounds {
+		server, hasServer := outbound.Options.(option.ServerOptionsWrapper)
+		if !hasServer || !server.TakeServerOptions().Build().Addr.IsUnspecified() {
+			return nil
+		}
+		notes = append(notes, outbound.Tag)
+	}
+	return notes
 }
 
 // isEmptySubscription reports whether the content carries no server at all, as a

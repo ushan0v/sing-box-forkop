@@ -333,6 +333,9 @@ func (s *ProviderRemote) fetchProvider(ctx context.Context, client *http.Client)
 	if response.StatusCode != http.StatusOK {
 		return result, E.New("unexpected status: ", response.Status)
 	}
+	if reason := deviceRefusal(response.Header); reason != "" {
+		return result, E.New("the provider refused this device: ", reason)
+	}
 	contentRaw, err := io.ReadAll(response.Body)
 	if err != nil {
 		return result, err

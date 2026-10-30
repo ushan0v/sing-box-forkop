@@ -387,3 +387,45 @@ func TestParseSubscriptionTellsAnEmptyOneFromABrokenOne(t *testing.T) {
 		})
 	}
 }
+
+// Remnawave answers an ended account, a device over its limit and an account without hosts with
+// entries at 0.0.0.0:1 named after its notice, in the format the client asked for.
+func TestParseSubscriptionTakesNoNotesForServers(t *testing.T) {
+	ctx := include.Context(context.Background())
+	const uuid = "00000000-0000-0000-0000-000000000000"
+	for name, content := range map[string]string{
+		"share links": "vless://" + uuid + "@0.0.0.0:1?encryption=none&security=none&type=tcp#%E2%8C%9B%20Subscription%20expired\n" +
+			"vless://" + uuid + "@0.0.0.0:1?encryption=none&security=none&type=tcp#Contact%20support\n",
+		"a sing-box configuration": `{"outbounds": [` +
+			`{"type": "selector", "tag": "proxy", "outbounds": ["⌛ Subscription expired", "Contact support"]},` +
+			`{"type": "vless", "tag": "⌛ Subscription expired", "server": "0.0.0.0", "server_port": 1, "uuid": "` + uuid + `"},` +
+			`{"type": "vless", "tag": "Contact support", "server": "0.0.0.0", "server_port": 1, "uuid": "` + uuid + `"},` +
+			`{"type": "direct", "tag": "direct"}]}`,
+		"a Clash configuration": "proxies:\n" +
+			"  - {name: \"⌛ Subscription expired\", type: vless, server: 0.0.0.0, port: 1, uuid: " + uuid + ", network: tcp}\n" +
+			"  - {name: \"Contact support\", type: vless, server: 0.0.0.0, port: 1, uuid: " + uuid + ", network: tcp}\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			result, err := parser.ParseSubscription(ctx, content)
+			if err == nil {
+				t.Fatalf("notes were imported as servers: %q", tags(result))
+			}
+			if !strings.Contains(err.Error(), "lists no server, only notes: ⌛ Subscription expired; Contact support") {
+				t.Fatalf("the notes were reported as %v", err)
+			}
+			if len(result.Outbounds) != 0 {
+				t.Fatalf("an error came with servers: %q", tags(result))
+			}
+		})
+	}
+
+	mixed := "vless://" + uuid + "@0.0.0.0:1?encryption=none&security=none&type=tcp#Expires%202026-12-01\n" +
+		"vless://11111111-1111-1111-1111-111111111111@203.0.113.1:443?encryption=none&security=none&type=tcp#Server\n"
+	result, err := parser.ParseSubscription(ctx, mixed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Outbounds) != 2 {
+		t.Fatalf("a list with a note among its servers was read as %q", tags(result))
+	}
+}

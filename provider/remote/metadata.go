@@ -90,6 +90,21 @@ func mergeSubscriptionData(info adapter.SubscriptionInfo, metadata adapter.Subsc
 	return info, metadata
 }
 
+// deviceRefusal tells why Remnawave did not take this device: it answers such a request with
+// status 200, these headers, and nothing or a list of notes in place of the servers.
+func deviceRefusal(header http.Header) string {
+	refused := func(name string) bool { return strings.EqualFold(header.Get(name), "true") }
+	switch {
+	case refused("x-hwid-max-devices-reached"):
+		return "the subscription's limit of devices is reached"
+	case refused("x-hwid-not-supported"):
+		return "it requires the X-HWID header"
+	case refused("x-hwid-limit"):
+		return "it did not take the X-HWID of this device"
+	}
+	return ""
+}
+
 func parseInfo(value string) (adapter.SubscriptionInfo, bool) {
 	var info adapter.SubscriptionInfo
 	loaded := false

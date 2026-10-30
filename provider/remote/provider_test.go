@@ -228,6 +228,42 @@ func TestFailedProviderUpdateKeepsTheMetadataItDelivered(t *testing.T) {
 	}
 }
 
+// Remnawave answers a device it does not take with 200, headers that say why, its notice and,
+// in place of the servers, a list of notes or nothing.
+func TestProviderUpdateNamesTheDeviceRefusal(t *testing.T) {
+	for header, reason := range map[string]string{
+		"x-hwid-max-devices-reached": "the provider refused this device: the subscription's limit of devices is reached",
+		"x-hwid-not-supported":       "the provider refused this device: it requires the X-HWID header",
+		"x-hwid-limit":               "the provider refused this device: it did not take the X-HWID of this device",
+	} {
+		t.Run(header, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set(header, "true")
+				w.Header().Set("x-hwid-limit", "true")
+				w.Header().Set("announce", "delete a device in the bot")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("vless://00000000-0000-0000-0000-000000000000@0.0.0.0:1?security=none#Device%20limit%20reached\n"))
+			}))
+			defer server.Close()
+
+			remote := &ProviderRemote{
+				ctx:       context.Background(),
+				logger:    log.NewNOPFactory().NewLogger("test"),
+				url:       server.URL,
+				userAgent: "sing-box",
+				dialer:    systemTestDialer{},
+			}
+			err := remote.fetch(context.Background())
+			if err == nil || err.Error() != reason {
+				t.Fatalf("the refusal was reported as %v", err)
+			}
+			if announce := remote.SubscriptionMetadata().Announce; announce != "delete a device in the bot" {
+				t.Fatalf("the refusal lost the notice it came with: %q", announce)
+			}
+		})
+	}
+}
+
 // A request that never reached the panel carries no headers, so it must not
 // blank the metadata the provider already had.
 func TestUnreachableProviderKeepsTheMetadataItAlreadyHad(t *testing.T) {
