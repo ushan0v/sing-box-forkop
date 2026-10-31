@@ -1,6 +1,6 @@
 package encryption
 
-// What client.go and common.go took from Xray's own packages (podkop-engine).
+// What client.go, common.go and server.go took from Xray's own packages (podkop-engine).
 
 import (
 	"crypto/rand"

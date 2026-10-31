@@ -14,6 +14,7 @@ import (
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing-box/protocol/vless/encryption"
 	"github.com/sagernet/sing-box/transport/v2ray"
 	"github.com/sagernet/sing-vmess/packetaddr"
 	"github.com/sagernet/sing-vmess/vless"
@@ -44,6 +45,8 @@ type Inbound struct {
 	tlsConfig  tls.ServerConfig
 	transport  adapter.V2RayServerTransport
 	references []string
+	// decryption is VLESS Encryption between the transport and VLESS, nil without it
+	decryption *encryption.ServerInstance
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.VLESSInboundOptions) (adapter.Inbound, error) {
@@ -68,6 +71,14 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		return it.Flow
 	}))
 	inbound.service = service
+	// With VLESS Encryption a flow runs on that layer, over any transport, as in Xray: the
+	// layer has the buffers Vision reads (encryption/vision.go).
+	if options.Decryption != "" && options.Decryption != "none" {
+		inbound.decryption, err = encryption.NewServer(options.Decryption)
+		if err != nil {
+			return nil, E.Cause(err, "decryption")
+		}
+	}
 	if options.TLS != nil {
 		inbound.tlsConfig, err = tls.NewServerWithOptions(tls.ServerOptions{
 			Context: ctx,
@@ -105,6 +116,9 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	if stage != adapter.StartStateStart {
 		return nil
+	}
+	if h.decryption != nil {
+		scope.Add(h.decryption.Close)
 	}
 	if h.tlsConfig != nil {
 		err := h.tlsConfig.Start()
@@ -160,7 +174,14 @@ func (h *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata ada
 		}
 		conn = tlsConn
 	}
-	err := h.service.NewConnection(adapter.WithContext(ctx, &metadata), conn, metadata.Source, onClose)
+	decrypted, err := h.decrypt(ctx, conn)
+	if err != nil {
+		N.CloseOnHandshakeFailure(conn, onClose, err)
+		h.logger.ErrorContext(ctx, E.Cause(err, "process connection from ", metadata.Source))
+		return
+	}
+	conn = decrypted
+	err = h.service.NewConnection(adapter.WithContext(ctx, &metadata), conn, metadata.Source, onClose)
 	if err != nil {
 		N.CloseOnHandshakeFailure(conn, onClose, err)
 		h.logger.ErrorContext(ctx, E.Cause(err, "process connection from ", metadata.Source))

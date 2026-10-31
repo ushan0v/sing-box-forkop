@@ -37,3 +37,26 @@ func (h *vlessDialer) encrypt(ctx context.Context, conn net.Conn) (net.Conn, err
 	}
 	return encrypted, nil
 }
+
+// decrypt takes VLESS Encryption off a connection a client has just made, under the TLS
+// and the transport it came through; without the setting the connection is returned as it
+// is. The server's handshake waits for the client's hello with nothing to end it by, so a
+// client that never sends one is cut off as encrypt cuts a silent server.
+func (h *Inbound) decrypt(ctx context.Context, conn net.Conn) (net.Conn, error) {
+	if h.decryption == nil {
+		return conn, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, C.TCPTimeout)
+	defer cancel()
+	stop := context.AfterFunc(ctx, func() {
+		conn.Close()
+	})
+	decrypted, err := h.decryption.Handshake(conn, nil)
+	if !stop() {
+		return nil, E.Cause(ctx.Err(), "VLESS Encryption handshake")
+	}
+	if err != nil {
+		return nil, E.Cause(err, "VLESS Encryption handshake")
+	}
+	return decrypted, nil
+}

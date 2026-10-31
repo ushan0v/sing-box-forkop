@@ -6,7 +6,7 @@
 - **Cloudflare WARP** — WARP через WireGuard с обфускацией AmneziaWG
 - **TrustTunnel** — протокол AdGuard, клиент и сервер
 - **mieru** — клиент и сервер
-- **VLESS Encryption** — шифрование VLESS из Xray
+- **VLESS Encryption** — шифрование VLESS из Xray, клиент и сервер
 - **XHTTP** — транспорт Xray, в том числе поверх HTTP/3
 - **Fallback** — первый рабочий сервер по уровням приоритета
 - **Единая задержка** — время запроса без установки соединения

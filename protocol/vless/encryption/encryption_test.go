@@ -39,11 +39,16 @@ type testServer struct {
 	failed    atomic.Int32
 }
 
-// newTestServer is the server of Xray (xray_server_test.go) behind a TCP listener: every
-// connection is echoed back.
+// newTestServer is the server of Xray (server.go) behind a TCP listener: every connection is
+// echoed back.
 func newTestServer(t *testing.T, keys [][]byte, xorMode uint32, seconds int64, padding string) *testServer {
-	server := &testServer{instance: new(ServerInstance)}
-	require.NoError(t, server.instance.Init(keys, xorMode, seconds, 0, padding))
+	instance := new(ServerInstance)
+	require.NoError(t, instance.Init(keys, xorMode, seconds, 0, padding))
+	return serveInstance(t, instance)
+}
+
+func serveInstance(t *testing.T, instance *ServerInstance) *testServer {
+	server := &testServer{instance: instance}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	server.listener = listener
@@ -289,6 +294,61 @@ func TestNewClientErrorsDoNotRepeatTheSetting(t *testing.T) {
 		require.NotContains(t, err.Error(), mark, name)
 		require.NotContains(t, err.Error(), x25519Key, name)
 		require.NotContains(t, err.Error(), "user@host", name)
+	}
+}
+
+// The server's setting as Xray's vlessenc writes it, with each kind of key, and the pairs a
+// client of it connects with, 0-RTT included.
+func TestNewServerSetting(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"x25519", "mlkem768"} {
+		for _, setting := range []struct{ server, client string }{
+			{".native.600s.", ".native.0rtt."},
+			{".xorpub.300-600s.", ".xorpub.0rtt."},
+			{".random.0s.", ".random.1rtt."},
+			{".native.600s.100-111-1111.75-0-111.50-0-3333.", ".native.0rtt.100-111-1111.75-0-111.50-0-3333."},
+		} {
+			t.Run(kind+setting.server, func(t *testing.T) {
+				t.Parallel()
+				serverKey, clientKey := testKeys(t, kind)
+				instance, err := NewServer(Prefix + setting.server + base64.RawURLEncoding.EncodeToString(serverKey))
+				require.NoError(t, err)
+				server := serveInstance(t, instance)
+				client, err := NewClient(Prefix + setting.client + clientKey)
+				require.NoError(t, err)
+				for i := 0; i < 2; i++ {
+					echo(t, server.dial(t, client), 5000)
+				}
+				require.EqualValues(t, 2, server.handshook.Load())
+			})
+		}
+	}
+}
+
+func TestNewServerRefusesASetting(t *testing.T) {
+	t.Parallel()
+	serverKey, clientKey := testKeys(t, "x25519")
+	key := base64.RawURLEncoding.EncodeToString(serverKey)
+	_, mlkemPublic := testKeys(t, "mlkem768")
+	const mark = "s3cretMark"
+	for name, setting := range map[string]string{
+		"empty":                "",
+		"none":                 "none",
+		"the client's setting": Prefix + ".native.0rtt." + clientKey,
+		"no key":               Prefix + ".native.600s",
+		"unknown mode":         Prefix + ".plain.600s." + key,
+		"negative seconds":     Prefix + ".native.-5s." + key,
+		"a public ML-KEM key":  Prefix + ".native.600s." + mlkemPublic,
+		"padding after key":    Prefix + ".native.600s." + key + ".100-111-1111",
+		"a pause of 10 min":    Prefix + ".native.600s.100-111-1111.100-600000-600000." + key,
+		"as the mode":          Prefix + "." + mark + ".600s." + key,
+		"as the seconds":       Prefix + ".native." + mark + "." + key,
+		"as a key":             Prefix + ".native.600s." + mark + mark + mark,
+	} {
+		_, err := NewServer(setting)
+		require.Error(t, err, name)
+		require.NotContains(t, err.Error(), mark, name)
+		require.NotContains(t, err.Error(), key, name)
 	}
 }
 

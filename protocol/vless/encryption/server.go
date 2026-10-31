@@ -1,6 +1,5 @@
 // This file is derived from Xray-core v26.9.30 (https://github.com/XTLS/Xray-core,
 // proxy/vless/encryption/server.go), which is licensed under the Mozilla Public License 2.0.
-// It is the server side, kept here for the tests of the client only.
 // What differs from the original: the imports, and the helpers of Xray's own packages
 // (its errors, RandBetween, HasAESGCMHardwareSupport) replaced by the standard library
 // and by support.go of this package.
