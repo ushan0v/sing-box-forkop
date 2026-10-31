@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"runtime"
 	"strings"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/sagernet/cors"
 	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing-box/common/listener"
 	"github.com/sagernet/sing-box/common/trafficcontrol"
 	"github.com/sagernet/sing-box/common/urltest"
 	C "github.com/sagernet/sing-box/constant"
@@ -25,6 +27,7 @@ import (
 	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/json"
+	"github.com/sagernet/sing/common/json/badoption"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/service"
@@ -50,7 +53,7 @@ type Server struct {
 	outbound       adapter.OutboundManager
 	endpoint       adapter.EndpointManager
 	provider       adapter.ProviderManager
-	logger         log.Logger
+	logger         log.ContextLogger
 	httpServer     *http.Server
 	closed         chan struct{}
 	closeOnce      sync.Once
@@ -191,7 +194,7 @@ var (
 
 func (s *Server) listen() (listener net.Listener, err error) {
 	for range 3 {
-		listener, err = net.Listen(M.NetworkFromNetAddr(N.NetworkTCP, M.ParseSocksaddr(s.httpServer.Addr).Addr), s.httpServer.Addr)
+		listener, err = s.listenOnce()
 		if runtime.GOOS == "android" && errors.Is(err, syscall.EADDRINUSE) {
 			time.Sleep(100 * time.Millisecond)
 			continue
@@ -199,6 +202,41 @@ func (s *Server) listen() (listener net.Listener, err error) {
 		break
 	}
 	return
+}
+
+// listenOnce listens at an IP address through a listener of the instance, which a reload
+// hands over to the next one.
+func (s *Server) listenOnce() (net.Listener, error) {
+	address := M.ParseSocksaddr(s.httpServer.Addr)
+	if address.IsFqdn() {
+		return net.Listen(N.NetworkTCP, s.httpServer.Addr)
+	}
+	if !address.Addr.IsValid() {
+		address.Addr = netip.IPv6Unspecified()
+	}
+	listenAddr := badoption.Addr(address.Addr)
+	instanceListener := listener.New(listener.Options{
+		Context: s.ctx,
+		Logger:  s.logger,
+		Network: []string{N.NetworkTCP},
+		Listen:  option.ListenOptions{Listen: &listenAddr, ListenPort: address.Port},
+	})
+	tcpListener, err := instanceListener.ListenTCP()
+	if err != nil {
+		return nil, err
+	}
+	return &instanceTCPListener{tcpListener, instanceListener}, nil
+}
+
+// instanceTCPListener closes the listener of the instance with the socket, so that a closed
+// server leaves nothing to hand over.
+type instanceTCPListener struct {
+	net.Listener
+	instanceListener *listener.Listener
+}
+
+func (l *instanceTCPListener) Close() error {
+	return l.instanceListener.Close()
 }
 
 func (s *Server) listenLater(delay time.Duration) {
@@ -228,7 +266,8 @@ func (s *Server) serve(listener net.Listener) {
 	s.logger.Info("restful api listening at ", listener.Addr())
 	go func() {
 		err := s.httpServer.Serve(listener)
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		// a closed socket was handed over to the instance a reload started
+		if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
 			s.logger.Error("external controller serve error: ", err)
 		}
 	}()

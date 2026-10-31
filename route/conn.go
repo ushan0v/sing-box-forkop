@@ -59,6 +59,8 @@ func (m *ConnectionManager) Start(stage adapter.StartStage, scope *adapter.Scope
 }
 
 func (m *ConnectionManager) Count() int {
+	m.access.Lock()
+	defer m.access.Unlock()
 	return m.connections.Len()
 }
 

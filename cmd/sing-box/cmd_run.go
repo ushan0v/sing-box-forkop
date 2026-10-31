@@ -7,9 +7,12 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	runtimeDebug "runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -188,41 +191,166 @@ func run() error {
 	osSignals := make(chan os.Signal, 1)
 	signal.Notify(osSignals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(osSignals)
+	running, err := startService(options)
+	if err != nil {
+		return err
+	}
 	for {
-		instance, cancel, createErr := create(options)
-		if createErr != nil {
-			return createErr
+		osSignal := <-osSignals
+		if osSignal != syscall.SIGHUP {
+			running.close()
+			return nil
 		}
-		runtimeDebug.FreeOSMemory()
-		for {
-			osSignal := <-osSignals
-			if osSignal == syscall.SIGHUP {
-				err = checkForReload()
-				if err != nil {
-					log.Error(E.Cause(err, "reload service"))
-					continue
-				}
-			}
-			cancel()
-			closeCtx, closed := context.WithCancel(context.Background())
-			go closeMonitor(closeCtx)
-			err = instance.Close()
-			closed()
-			if osSignal != syscall.SIGHUP {
-				if err != nil {
-					log.Error(E.Cause(err, "sing-box did not closed properly"))
-				}
-				return nil
-			}
-			instance = nil
-			runtimeDebug.FreeOSMemory()
-			break
+		err = checkForReload()
+		if err == nil {
+			options, err = readConfigAndMerge()
 		}
-		options, err = readConfigAndMerge()
+		if err != nil {
+			log.Error(E.Cause(err, "reload service"))
+			continue
+		}
+		err = running.reload(options)
 		if err != nil {
 			return err
 		}
 	}
+}
+
+// reloadDrainTimeout bounds how long the instance a reload replaced keeps its connections.
+const reloadDrainTimeout = 30 * time.Second
+
+// runningService is the instance serving and the one a reload replaced, which keeps the
+// connections it has until they end.
+type runningService struct {
+	instance *box.Box
+	cancel   context.CancelFunc
+	retiring *retiringInstance
+}
+
+func startService(options option.Options) (*runningService, error) {
+	instance, cancel, err := create(options)
+	if err != nil {
+		return nil, err
+	}
+	runtimeDebug.FreeOSMemory()
+	return &runningService{instance: instance, cancel: cancel}, nil
+}
+
+// reload starts an instance of options beside the serving one, which hands its listeners
+// over and keeps its connections; without the memory for both, it restarts instead. An
+// error leaves nothing running.
+func (s *runningService) reload(options option.Options) error {
+	s.retiring.close()
+	s.retiring = nil
+	if !roomForReload() {
+		log.Warn("reload service: too little memory to keep the connections, restarting")
+		err := closeInstance(s.instance, s.cancel)
+		if err != nil {
+			log.Error(E.Cause(err, "close service"))
+		}
+		runtimeDebug.FreeOSMemory()
+		s.instance, s.cancel, err = create(options)
+		if err != nil {
+			return err
+		}
+		runtimeDebug.FreeOSMemory()
+		return nil
+	}
+	err := s.instance.Release()
+	if err != nil {
+		log.Warn(E.Cause(err, "release service"))
+	}
+	instance, cancel, err := create(options)
+	if err != nil {
+		closeInstance(s.instance, s.cancel)
+		return err
+	}
+	err = s.instance.CloseReleasedListeners()
+	if err != nil {
+		log.Warn(E.Cause(err, "close released listeners"))
+	}
+	s.retiring = retire(s.instance, s.cancel)
+	s.instance, s.cancel = instance, cancel
+	return nil
+}
+
+func (s *runningService) close() {
+	s.retiring.close()
+	err := closeInstance(s.instance, s.cancel)
+	if err != nil {
+		log.Error(E.Cause(err, "sing-box did not closed properly"))
+	}
+}
+
+func closeInstance(instance *box.Box, cancel context.CancelFunc) error {
+	cancel()
+	closeCtx, closed := context.WithCancel(context.Background())
+	go closeMonitor(closeCtx)
+	err := instance.Close()
+	closed()
+	return err
+}
+
+type retiringInstance struct {
+	instance  *box.Box
+	cancel    context.CancelFunc
+	closeOnce sync.Once
+	closed    chan struct{}
+}
+
+func retire(instance *box.Box, cancel context.CancelFunc) *retiringInstance {
+	retiring := &retiringInstance{instance: instance, cancel: cancel, closed: make(chan struct{})}
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		deadline := time.Now().Add(reloadDrainTimeout)
+		for instance.ConnectionCount() > 0 && time.Now().Before(deadline) {
+			select {
+			case <-retiring.closed:
+				return
+			case <-ticker.C:
+			}
+		}
+		retiring.close()
+	}()
+	return retiring
+}
+
+func (r *retiringInstance) close() {
+	if r == nil {
+		return
+	}
+	r.closeOnce.Do(func() {
+		err := closeInstance(r.instance, r.cancel)
+		if err != nil {
+			log.Error(E.Cause(err, "close replaced service"))
+		}
+		close(r.closed)
+		runtimeDebug.FreeOSMemory()
+	})
+}
+
+// roomForReload tells whether the system can give a new instance about what the serving one
+// holds, with room for the collector, while both are alive.
+var roomForReload = func() bool {
+	content, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return true
+	}
+	for _, line := range strings.Split(string(content), "\n") {
+		value, found := strings.CutPrefix(line, "MemAvailable:")
+		if !found {
+			continue
+		}
+		available, err := strconv.ParseUint(strings.TrimSuffix(strings.TrimSpace(value), " kB"), 10, 64)
+		if err != nil {
+			return true
+		}
+		var stats runtime.MemStats
+		runtime.ReadMemStats(&stats)
+		return available*1024 >= stats.HeapInuse*3/2
+	}
+	return true
 }
 
 // A check builds the configuration and closes it unstarted, which leaves running what a component

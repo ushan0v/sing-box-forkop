@@ -65,21 +65,45 @@ func (l *Listener) ListenTCP() (net.Listener, error) {
 			})
 		})
 	}
-	tcpListener, err := ListenNetworkNamespace[net.Listener](l.ctx, l.listenOptions.NetNs, func() (net.Listener, error) {
-		if l.listenOptions.TCPFastOpen {
-			var tfoConfig tfo.ListenConfig
-			tfoConfig.ListenConfig = listenConfig
-			return tfoConfig.Listen(l.ctx, M.NetworkFromNetAddr(N.NetworkTCP, bindAddr.Addr), bindAddr.String())
-		} else {
-			return listenConfig.Listen(l.ctx, M.NetworkFromNetAddr(N.NetworkTCP, bindAddr.Addr), bindAddr.String())
+	key := socketKey{N.NetworkTCP, bindAddr.String(), l.listenOptions.NetNs}
+	options := socketOptions{
+		bindInterface: l.listenOptions.BindInterface,
+		routingMark:   uint32(l.listenOptions.RoutingMark),
+		reuseAddr:     l.listenOptions.ReuseAddr,
+		tproxy:        l.tproxy,
+		fastOpen:      l.listenOptions.TCPFastOpen,
+		multipath:     l.listenOptions.TCPMultiPath,
+	}
+	var tcpListener net.Listener
+	if l.listenOptions.ListenPort != 0 {
+		if file := takeOver(key, options); file != nil {
+			fileListener, fileErr := net.FileListener(file)
+			file.Close()
+			if fileErr == nil {
+				tcpListener = &keepAliveListener{fileListener.(*net.TCPListener), listenConfig.KeepAliveConfig}
+			}
 		}
-	})
-	if err != nil {
-		return nil, err
+	}
+	if tcpListener == nil {
+		tcpListener, err = ListenNetworkNamespace[net.Listener](l.ctx, l.listenOptions.NetNs, func() (net.Listener, error) {
+			if l.listenOptions.TCPFastOpen {
+				var tfoConfig tfo.ListenConfig
+				tfoConfig.ListenConfig = listenConfig
+				return tfoConfig.Listen(l.ctx, M.NetworkFromNetAddr(N.NetworkTCP, bindAddr.Addr), bindAddr.String())
+			} else {
+				return listenConfig.Listen(l.ctx, M.NetworkFromNetAddr(N.NetworkTCP, bindAddr.Addr), bindAddr.String())
+			}
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 	l.logger.Info("tcp server started at ", tcpListener.Addr())
 	l.tcpListener = tcpListener
-	return tcpListener, err
+	if l.listenOptions.ListenPort != 0 {
+		l.hold(key, options)
+	}
+	return tcpListener, nil
 }
 
 func (l *Listener) loopTCPIn() {

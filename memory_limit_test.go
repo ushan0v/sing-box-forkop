@@ -9,6 +9,7 @@ import (
 
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing/common/byteformats"
 
 	"github.com/stretchr/testify/require"
 )
@@ -160,4 +161,33 @@ func TestMemoryLimitStart(t *testing.T) {
 	require.Less(t, debug.SetMemoryLimit(-1), before)
 	stop()
 	require.Equal(t, before, debug.SetMemoryLimit(-1))
+}
+
+// Across a reload the old instance stops after the new one started: the limit stays until
+// the last of them stops, and a limit the new one sets by hand outlives the old one.
+func TestMemoryLimitShared(t *testing.T) {
+	defer debug.SetMemoryLimit(debug.SetMemoryLimit(-1))
+	logger := log.NewNOPFactory().Logger()
+	t.Setenv("GOMEMLIMIT", "")
+	if _, known := newMemoryLimiter(systemMemoryFiles).readValue(systemMemoryFiles.meminfo, "MemAvailable:"); !known {
+		t.Skip("no /proc/meminfo")
+	}
+	before := debug.SetMemoryLimit(-1)
+
+	stopOld := startMemoryLimit(logger, option.DebugOptions{})
+	stopNew := startMemoryLimit(logger, option.DebugOptions{})
+	stopOld()
+	require.Less(t, debug.SetMemoryLimit(-1), before)
+	stopNew()
+	require.Equal(t, before, debug.SetMemoryLimit(-1))
+
+	var byHand byteformats.MemoryBytes
+	require.NoError(t, byHand.UnmarshalJSON([]byte(`"96MB"`)))
+	stopOld = startMemoryLimit(logger, option.DebugOptions{})
+	debug.SetMemoryLimit(64 * mebibyte)
+	stopNew = startMemoryLimit(logger, option.DebugOptions{MemoryLimit: &byHand})
+	stopOld()
+	require.Equal(t, int64(64*mebibyte), debug.SetMemoryLimit(-1))
+	stopNew()
+	require.Equal(t, int64(64*mebibyte), debug.SetMemoryLimit(-1))
 }
