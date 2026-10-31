@@ -703,6 +703,31 @@ func addVMessTransport(payload map[string]string, transport *option.V2RayTranspo
 		payload["net"] = "h2"
 		payload["path"] = transport.HTTPOptions.Path
 		payload["host"] = strings.Join(transport.HTTPOptions.Host, ",")
+	case C.V2RayTransportTypeXHTTP:
+		payload["net"] = "xhttp"
+		options := normalizeXHTTPOptions(transport.XHTTPOptions)
+		payload["host"] = options.Host
+		payload["path"] = options.Path
+		if options.Mode != "" {
+			// v2rayN reads the mode from the field of the TCP header, the parser from "mode"
+			payload["type"] = options.Mode
+			payload["mode"] = options.Mode
+		}
+		extra := xhttpExtra(options)
+		if options.Download != nil {
+			download, err := xhttpDownloadExtra(options.Mode, options.Download)
+			if err != nil {
+				return err
+			}
+			extra["downloadSettings"] = download
+		}
+		if len(extra) != 0 {
+			content, err := json.Marshal(extra)
+			if err != nil {
+				return err
+			}
+			payload["extra"] = base64.RawURLEncoding.EncodeToString(content)
+		}
 	default:
 		return E.New("unsupported VMess transport: ", transport.Type)
 	}

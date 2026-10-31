@@ -281,6 +281,22 @@ func TestGenerateSubscriptionLinkRoundTrip(t *testing.T) {
 			},
 		},
 		{
+			Type: C.TypeVMess,
+			Tag:  "VMess XHTTP",
+			Options: &option.VMessOutboundOptions{
+				ServerOptions: option.ServerOptions{Server: "vmess.example", ServerPort: 443},
+				UUID:          "00000000-0000-4000-8000-000000000007", Security: "auto",
+				OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{TLS: &option.OutboundTLSOptions{
+					Enabled: true, ServerName: "vmess-sni.example", ALPN: []string{"h2"},
+				}},
+				Transport: &option.V2RayTransportOptions{Type: C.V2RayTransportTypeXHTTP, XHTTPOptions: option.V2RayXHTTPOptions{
+					Mode: "stream-up", V2RayXHTTPBaseOptions: option.V2RayXHTTPBaseOptions{
+						Host: "cdn.example", Path: "/xhttp", XPaddingBytes: option.Range[int]{From: 100, To: 200},
+					},
+				}},
+			},
+		},
+		{
 			Type: C.TypeTrojan,
 			Tag:  "Trojan node",
 			Options: &option.TrojanOutboundOptions{
