@@ -561,7 +561,7 @@ func (g *URLTestGroup) selectOutbound(network string) (adapter.Outbound, bool) {
 		if history == nil {
 			continue
 		}
-		if minDelay == 0 || minDelay > history.Delay+g.tolerance {
+		if minDelay == 0 || uint32(minDelay) > uint32(history.Delay)+uint32(g.tolerance) {
 			minDelay = history.Delay
 			minOutbound = detour
 		}

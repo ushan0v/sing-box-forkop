@@ -48,6 +48,26 @@ func TestURLTestGroupHistoryIsIsolated(t *testing.T) {
 	}
 }
 
+// A tolerance near the uint16 limit means "keep the selected member"; a sum
+// that wrapped around would read as a lower delay and switch to a slower one.
+func TestURLTestToleranceDoesNotWrapAround(t *testing.T) {
+	current := newTypedTestOutbound(C.TypeDirect, "current")
+	slower := newTypedTestOutbound(C.TypeDirect, "slower")
+	group, err := NewURLTestGroup(context.Background(), nil, nil, []adapter.Outbound{current, slower}, "", nil, 0, 65000, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group.storeHistory(current.Tag(), &adapter.URLTestHistory{Time: time.Now(), Delay: 500})
+	group.storeHistory(slower.Tag(), &adapter.URLTestHistory{Time: time.Now(), Delay: 1000})
+	group.selectedOutboundTCP = current
+	group.selectedOutboundUDP = current
+	for _, network := range []string{N.NetworkTCP, N.NetworkUDP} {
+		if selected, ok := group.Select(network); selected != current || !ok {
+			t.Fatalf("%s: selected %s instead of the current member", network, selected.Tag())
+		}
+	}
+}
+
 func TestURLTestGroupUsesExpectedStatus(t *testing.T) {
 	node := newFallbackHealthTestOutbound("node", true)
 	manager := &testOutboundManager{outbounds: map[string]adapter.Outbound{node.Tag(): node}}
