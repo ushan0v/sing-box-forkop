@@ -15,9 +15,11 @@ import (
 
 type testDialer struct {
 	address string
+	delay   time.Duration
 }
 
 func (d *testDialer) DialContext(ctx context.Context, network string, _ M.Socksaddr) (net.Conn, error) {
+	time.Sleep(d.delay)
 	return (&net.Dialer{}).DialContext(ctx, network, d.address)
 }
 
@@ -44,6 +46,34 @@ func TestUnifiedDelayRespectsContextDeadline(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed >= 150*time.Millisecond {
 		t.Fatalf("URL test exceeded context deadline: %v", elapsed)
+	}
+}
+
+// A server, or a proxy on the way, may close the connection after the first
+// response; the second request then needs a connection of its own, and its
+// dial is no part of the measured round trip.
+func TestUnifiedDelaySurvivesConnectionClose(t *testing.T) {
+	for _, closeConnection := range []bool{false, true} {
+		var requests atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+			requests.Add(1)
+			if closeConnection {
+				response.Header().Set("Connection", "close")
+			}
+			response.WriteHeader(http.StatusNoContent)
+		}))
+		dialer := &testDialer{address: server.Listener.Addr().String(), delay: 150 * time.Millisecond}
+		delay, err := URLTest(ContextWithIsUnifiedDelay(context.Background()), server.URL, dialer)
+		server.Close()
+		if err != nil {
+			t.Fatalf("close=%v: %v", closeConnection, err)
+		}
+		if requests.Load() != 2 {
+			t.Fatalf("close=%v: expected two requests, got %d", closeConnection, requests.Load())
+		}
+		if delay >= 100 {
+			t.Fatalf("close=%v: the delay includes the 150 ms dial: %d ms", closeConnection, delay)
+		}
 	}
 }
 

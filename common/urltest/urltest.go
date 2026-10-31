@@ -5,8 +5,10 @@ import (
 	"crypto/tls"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -119,6 +121,8 @@ func urlTest(ctx context.Context, link string, detour N.Dialer, expectedStatus E
 		}
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	start := time.Now()
 	instance, err := detour.DialContext(ctx, "tcp", M.ParseSocksaddrHostPortStr(hostname, port))
 	if err != nil {
@@ -132,10 +136,17 @@ func urlTest(ctx context.Context, link string, detour N.Dialer, expectedStatus E
 	if err != nil {
 		return
 	}
+	var instanceTaken atomic.Bool
 	client := http.Client{
 		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return instance, nil
+			// The transport dials with a context detached from the request's, so
+			// a dial after the server closed the first connection takes the
+			// probe's own, which ends with the probe.
+			DialContext: func(_ context.Context, network, addr string) (net.Conn, error) {
+				if !instanceTaken.Swap(true) {
+					return instance, nil
+				}
+				return detour.DialContext(ctx, network, M.ParseSocksaddr(addr))
 			},
 			TLSClientConfig: &tls.Config{
 				Time:    ntp.TimeFuncFromContext(ctx),
@@ -155,7 +166,10 @@ func urlTest(ctx context.Context, link string, detour N.Dialer, expectedStatus E
 	resp.Body.Close()
 	if IsUnifiedDelayFromContext(ctx) {
 		second := time.Now()
-		resp, err = client.Do(req.WithContext(ctx))
+		trace := &httptrace.ClientTrace{
+			GotConn: func(httptrace.GotConnInfo) { second = time.Now() },
+		}
+		resp, err = client.Do(req.WithContext(httptrace.WithClientTrace(ctx, trace)))
 		if err != nil {
 			return
 		}
