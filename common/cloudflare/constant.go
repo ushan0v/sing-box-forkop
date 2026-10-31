@@ -1,7 +1,8 @@
 package cloudflare
 
 const (
-	ApiUrl     = "https://api.cloudflareclient.com"
+	// The same API as api.cloudflareclient.com, which ISPs in Russia block.
+	ApiUrl     = "https://api.devices.cloudflare.com"
 	ApiVersion = "v0a4471"
 	KeyTypeWg  = "curve25519"
 	TunTypeWg  = "wireguard"
