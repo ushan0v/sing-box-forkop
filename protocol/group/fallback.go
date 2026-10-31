@@ -384,7 +384,8 @@ func (s *Fallback) usableLocked(candidate fallbackCandidate) bool {
 // selectAvailableLocked mirrors Mihomo findAliveProxy: a manually pinned member
 // wins while it stays usable, otherwise the first usable member by priority
 // wins, and when nothing passed the health check the group still reports its
-// highest priority member instead of reporting no selection at all.
+// highest priority member instead of reporting no selection at all. A pin is
+// released only for another member that works, so it outlives a network outage.
 func (s *Fallback) selectAvailableLocked() string {
 	if s.fixed != "" {
 		for _, candidate := range s.candidates {
@@ -394,7 +395,9 @@ func (s *Fallback) selectAvailableLocked() string {
 			if s.usableLocked(candidate) {
 				return candidate.tag
 			}
-			s.clearFixedLocked()
+			if common.Any(s.candidates, s.usableLocked) {
+				s.clearFixedLocked()
+			}
 			break
 		}
 	}
@@ -434,7 +437,7 @@ func (s *Fallback) storeFixed(tag string) {
 // SelectOutbound pins the group to one member, or releases the pin when tag is
 // empty. A member the last health check found down is tested again first, as
 // Mihomo does, and stays unpinned if it is still down. The pin is released as
-// soon as the pinned member fails a health check.
+// soon as the pinned member fails a health check another member passes.
 func (s *Fallback) SelectOutbound(tag string) bool {
 	if tag != "" {
 		s.access.RLock()
@@ -765,9 +768,9 @@ func (s *Fallback) startupRetry(ctx context.Context) {
 }
 
 // startupRetryCandidates retries the whole group while nothing is alive, which
-// is what a not yet usable network looks like, and only the highest priority
-// member once something works, so a permanently dead first member cannot cause
-// repeated full sweeps on every start.
+// is what a not yet usable network looks like, and once something works only the
+// highest priority member and the members no check has judged yet, so a
+// permanently dead first member cannot cause repeated full sweeps on every start.
 func (s *Fallback) startupRetryCandidates() []fallbackCandidate {
 	s.access.RLock()
 	defer s.access.RUnlock()
@@ -776,10 +779,16 @@ func (s *Fallback) startupRetryCandidates() []fallbackCandidate {
 	}
 	for _, candidate := range s.candidates {
 		if state := s.health[candidate.tag]; state.checked && state.alive {
+			var retry []fallbackCandidate
 			if first := s.candidates[0]; !s.usableLocked(first) {
-				return []fallbackCandidate{first}
+				retry = append(retry, first)
 			}
-			return nil
+			for _, unjudged := range s.candidates {
+				if !s.health[unjudged.tag].checked {
+					retry = append(retry, unjudged)
+				}
+			}
+			return retry
 		}
 	}
 	return append([]fallbackCandidate(nil), s.candidates...)
@@ -812,6 +821,7 @@ func (s *Fallback) PerformUpdateCheck() {
 // ago by another group testing the same member with the same URL are reused;
 // pass maxAge 0 to force a fresh test.
 func (s *Fallback) checkCandidates(ctx context.Context, candidates []fallbackCandidate, maxAge time.Duration) (map[string]uint16, error) {
+	candidates = common.Filter(candidates, func(it fallbackCandidate) bool { return selectedByTest(it.outbound) })
 	resultMap := make(map[string]uint16)
 	results := make([]fallbackCheckResult, len(candidates))
 	b, _ := batch.New(ctx, batch.WithConcurrencyNum[any](10))
@@ -854,6 +864,22 @@ func (s *Fallback) checkCandidates(ctx context.Context, candidates []fallbackCan
 	s.access.Unlock()
 	s.interruptSelection(oldSelected, newSelected)
 	return resultMap, nil
+}
+
+// selectedByTest reports whether member dials what a test chose: a URLTest that has not tested
+// its members yet dials the first of them, so a check through it says nothing about the group.
+func selectedByTest(member adapter.Outbound) bool {
+	urlTest, isURLTest := member.(*URLTest)
+	if !isURLTest {
+		return true
+	}
+	group := urlTest.group
+	if group == nil {
+		return false
+	}
+	group.access.RLock()
+	defer group.access.RUnlock()
+	return group.selectedOutboundTCP != nil
 }
 
 type fallbackEarlyConn struct {

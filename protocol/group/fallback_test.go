@@ -516,6 +516,76 @@ func TestFallbackRetestsADownMemberBeforePinningIt(t *testing.T) {
 	}
 }
 
+func TestFallbackKeepsAPinWhileNoMemberAnswers(t *testing.T) {
+	primary := newFallbackHealthTestOutbound("primary", true)
+	secondary := newFallbackHealthTestOutbound("secondary", true)
+	fallback := newTestFallback(
+		fallbackCandidate{tag: primary.Tag(), outbound: primary},
+		fallbackCandidate{tag: secondary.Tag(), outbound: secondary},
+	)
+	fallback.checkOutbounds(context.Background(), 0)
+	if !fallback.SelectOutbound(secondary.Tag()) {
+		t.Fatal("Fallback refused to pin an existing member")
+	}
+
+	primary.setAvailable(false)
+	secondary.setAvailable(false)
+	fallback.checkOutbounds(context.Background(), 0)
+	if fallback.Fixed() != secondary.Tag() {
+		t.Fatalf("an outage of every member released the pin: fixed=%q", fallback.Fixed())
+	}
+
+	primary.setAvailable(true)
+	secondary.setAvailable(true)
+	fallback.checkOutbounds(context.Background(), 0)
+	if fallback.Fixed() != secondary.Tag() || selectedTag(fallback) != secondary.Tag() {
+		t.Fatalf("the pin did not hold after the outage: now=%q fixed=%q", selectedTag(fallback), fallback.Fixed())
+	}
+}
+
+func TestFallbackJudgesAURLTestMemberAfterItsOwnTest(t *testing.T) {
+	dead := newFallbackHealthTestOutbound("dead", false)
+	alive := newFallbackHealthTestOutbound("alive", true)
+	manager := &testOutboundManager{outbounds: map[string]adapter.Outbound{dead.Tag(): dead, alive.Tag(): alive}}
+	group, err := NewURLTestGroup(context.Background(), manager, log.NewNOPFactory().NewLogger("test"), []adapter.Outbound{dead, alive}, "http://health.test/generate_204", nil, 0, 0, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	urlTest := &URLTest{
+		Adapter:  outboundAdapter.NewAdapter(C.TypeURLTest, "urltest", []string{"tcp", "udp"}, nil),
+		ctx:      context.Background(),
+		outbound: manager,
+		logger:   log.NewNOPFactory().NewLogger("test"),
+		group:    group,
+	}
+	backup := newFallbackHealthTestOutbound("backup", true)
+	fallback := newTestFallback(
+		fallbackCandidate{tag: backup.Tag(), outbound: backup},
+		fallbackCandidate{tag: urlTest.Tag(), outbound: urlTest},
+	)
+	if !fallback.SelectOutbound(urlTest.Tag()) {
+		t.Fatal("Fallback refused to pin its URLTest member")
+	}
+
+	fallback.checkOutbounds(context.Background(), 0)
+	if fallback.Fixed() != urlTest.Tag() || selectedTag(fallback) != urlTest.Tag() {
+		t.Fatalf("a check before the URLTest chose a member released the pin: now=%q fixed=%q", selectedTag(fallback), fallback.Fixed())
+	}
+	retry := fallback.startupRetryCandidates()
+	if len(retry) != 1 || retry[0].tag != urlTest.Tag() {
+		t.Fatalf("the unjudged URLTest member is not retried: %+v", retry)
+	}
+
+	group.CheckOutbounds(context.Background(), true)
+	_, _ = fallback.checkCandidates(context.Background(), retry, 0)
+	if state := fallback.health[urlTest.Tag()]; !state.checked || !state.alive || fallback.Fixed() != urlTest.Tag() {
+		t.Fatalf("the URLTest member was not judged by the member it chose: checked=%v alive=%v fixed=%q", state.checked, state.alive, fallback.Fixed())
+	}
+	if retry = fallback.startupRetryCandidates(); len(retry) != 0 {
+		t.Fatalf("startup retry did not stop once every member was judged: %+v", retry)
+	}
+}
+
 func TestFallbackChecksAgainWhenTheNetworkChanges(t *testing.T) {
 	node := newFallbackHealthTestOutbound("node", true)
 	fallback := newTestFallback(fallbackCandidate{tag: node.Tag(), outbound: node})
