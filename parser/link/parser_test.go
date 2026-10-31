@@ -605,6 +605,30 @@ func TestParseVMessLinkWithNonStringFields(t *testing.T) {
 	}
 }
 
+func TestParseVMessLinkReadsTheXHTTPModeWhereV2rayNWritesIt(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		fields string
+		mode   string
+	}{
+		"v2rayN, in type":     {`"type":"stream-one"`, "stream-one"},
+		"mode wins":           {`"type":"stream-up","mode":"packet-up"`, "packet-up"},
+		"the TCP header none": {`"type":"none"`, "auto"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			payload := `{"v":"2","ps":"x","add":"vm.example","port":"443","id":"00000000-0000-4000-8000-000000000001",` +
+				`"aid":"0","scy":"auto","net":"xhttp","path":"/x","tls":"tls","sni":"vm.example",` + testCase.fields + `}`
+			outbound, err := ParseSubscriptionLink("vmess://" + base64.StdEncoding.EncodeToString([]byte(payload)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			transport := outbound.Options.(*option.VMessOutboundOptions).Transport
+			if transport == nil || transport.Type != C.V2RayTransportTypeXHTTP || transport.XHTTPOptions.Mode != testCase.mode {
+				t.Fatalf("transport = %#v", transport)
+			}
+		})
+	}
+}
+
 func TestParseShadowsocksLinkWithATrailingQuery(t *testing.T) {
 	// The generator folds the empty query into the encoded payload, so what
 	// follows the at sign is host:443? rather than a host and a port.

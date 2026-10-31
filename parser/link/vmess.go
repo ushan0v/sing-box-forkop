@@ -242,7 +242,7 @@ func vmessTransport(payload vmessPayload, tls *option.OutboundTLSOptions) (*opti
 			GRPCOptions: option.V2RayGRPCOptions{ServiceName: serviceName},
 		}, nil
 	case "xhttp", "splithttp":
-		settings, err := xhttp.LinkSettings(string(payload.Host), string(payload.Path), string(payload.Mode), string(payload.Extra))
+		settings, err := xhttp.LinkSettings(string(payload.Host), string(payload.Path), vmessXHTTPMode(payload), string(payload.Extra))
 		if err != nil {
 			return nil, err
 		}
@@ -251,4 +251,17 @@ func vmessTransport(payload vmessPayload, tls *option.OutboundTLSOptions) (*opti
 		return nil, E.New("unsupported QUIC transport")
 	}
 	return nil, E.New("unsupported transport: ", string(payload.Network))
+}
+
+// v2rayN keeps the XHTTP mode in "type", the field of the TCP header, and reads it back from
+// there; "none" or anything else in it leaves the mode to the client, as v2rayN does.
+func vmessXHTTPMode(payload vmessPayload) string {
+	if payload.Mode != "" {
+		return string(payload.Mode)
+	}
+	switch mode := strings.ToLower(string(payload.HeaderType)); mode {
+	case "auto", "packet-up", "stream-up", "stream-one":
+		return mode
+	}
+	return ""
 }
