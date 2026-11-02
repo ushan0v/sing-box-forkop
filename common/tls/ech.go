@@ -47,12 +47,37 @@ func parseECHClientConfig(ctx context.Context, clientConfig ECHCapableConfig, op
 		clientConfig.SetECHConfigList(block.Bytes)
 		return clientConfig, nil
 	} else {
+		queryOptions, err := echQueryOptions(ctx)
+		if err != nil {
+			return nil, err
+		}
 		return &ECHClientConfig{
 			ECHCapableConfig: clientConfig,
 			dnsRouter:        service.FromContext[adapter.DNSRouter](ctx),
+			queryOptions:     queryOptions,
 			queryServerName:  options.ECH.QueryServerName,
 		}, nil
 	}
+}
+
+// echQueryOptions asks for the record as for the server's name, the way the naive outbound does:
+// the lookup is the outbound's own, and DNS rules are written for the queries of clients.
+func echQueryOptions(ctx context.Context) (adapter.DNSQueryOptions, error) {
+	networkManager := service.FromContext[adapter.NetworkManager](ctx)
+	if networkManager == nil {
+		return adapter.DNSQueryOptions{}, nil
+	}
+	defaultOptions := networkManager.DefaultOptions()
+	if defaultOptions.DomainResolver == "" {
+		return adapter.DNSQueryOptions{}, nil
+	}
+	transport, loaded := service.FromContext[adapter.DNSTransportManager](ctx).Transport(defaultOptions.DomainResolver)
+	if !loaded {
+		return adapter.DNSQueryOptions{}, E.New("default domain resolver not found: ", defaultOptions.DomainResolver)
+	}
+	queryOptions := defaultOptions.DomainResolveOptions
+	queryOptions.Transport = transport
+	return queryOptions, nil
 }
 
 func parseECHServerConfig(ctx context.Context, options option.InboundTLSOptions, tlsConfig *tls.Config, echKeyPath *string) error {
@@ -110,6 +135,7 @@ type ECHClientConfig struct {
 	ECHCapableConfig
 	access          sync.Mutex
 	dnsRouter       adapter.DNSRouter
+	queryOptions    adapter.DNSQueryOptions
 	queryServerName string
 	lastTTL         time.Duration
 	lastUpdate      time.Time
@@ -147,7 +173,7 @@ func (s *ECHClientConfig) fetchAndHandshake(ctx context.Context, conn net.Conn) 
 				},
 			},
 		}
-		response, err := s.dnsRouter.Exchange(ctx, message, adapter.DNSQueryOptions{})
+		response, err := s.dnsRouter.Exchange(ctx, message, s.queryOptions)
 		if err != nil {
 			return nil, E.Cause(err, "fetch ECH config list")
 		}
@@ -183,6 +209,7 @@ func (s *ECHClientConfig) Clone() Config {
 	return &ECHClientConfig{
 		ECHCapableConfig: s.ECHCapableConfig.Clone().(ECHCapableConfig),
 		dnsRouter:        s.dnsRouter,
+		queryOptions:     s.queryOptions,
 		queryServerName:  s.queryServerName,
 		lastUpdate:       s.lastUpdate,
 	}
