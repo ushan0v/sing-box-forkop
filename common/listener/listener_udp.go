@@ -37,6 +37,7 @@ func (l *Listener) ListenUDP() (net.PacketConn, error) {
 }
 
 func (l *Listener) ListenUDPWithConfig(listenConfig net.ListenConfig) (net.PacketConn, error) {
+	foreign := listenConfig.Control != nil
 	bindAddr := M.SocksaddrFrom(l.listenOptions.Listen.Build(netip.AddrFrom4([4]byte{127, 0, 0, 1})), l.listenOptions.ListenPort)
 	if l.listenOptions.BindInterface != "" {
 		listenConfig.Control = control.Append(listenConfig.Control, control.BindToInterface(service.FromContext[adapter.NetworkManager](l.ctx).InterfaceFinder(), l.listenOptions.BindInterface, -1))
@@ -65,16 +66,38 @@ func (l *Listener) ListenUDPWithConfig(listenConfig net.ListenConfig) (net.Packe
 			})
 		})
 	}
-	udpConn, err := ListenNetworkNamespace[net.PacketConn](l.ctx, l.listenOptions.NetNs, func() (net.PacketConn, error) {
-		return listenConfig.ListenPacket(l.ctx, M.NetworkFromNetAddr(N.NetworkUDP, bindAddr.Addr), bindAddr.String())
-	})
-	if err != nil {
-		return nil, err
+	key := socketKey{N.NetworkUDP, bindAddr.String(), l.listenOptions.NetNs}
+	options := socketOptions{
+		bindInterface: l.listenOptions.BindInterface,
+		routingMark:   uint32(l.listenOptions.RoutingMark),
+		reuseAddr:     l.listenOptions.ReuseAddr,
+		tproxy:        l.tproxy,
+		fragment:      udpFragment,
+		foreign:       foreign,
+	}
+	var udpConn net.PacketConn
+	if l.listenOptions.ListenPort != 0 {
+		if file := takeOver(key, options); file != nil {
+			udpConn, _ = net.FilePacketConn(file)
+			file.Close()
+		}
+	}
+	if udpConn == nil {
+		var err error
+		udpConn, err = ListenNetworkNamespace[net.PacketConn](l.ctx, l.listenOptions.NetNs, func() (net.PacketConn, error) {
+			return listenConfig.ListenPacket(l.ctx, M.NetworkFromNetAddr(N.NetworkUDP, bindAddr.Addr), bindAddr.String())
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 	l.udpConn = udpConn.(*net.UDPConn)
 	l.udpAddr = bindAddr
 	l.logger.Info("udp server started at ", udpConn.LocalAddr())
-	return udpConn, err
+	if l.listenOptions.ListenPort != 0 {
+		l.hold(key, options)
+	}
+	return udpConn, nil
 }
 
 func (l *Listener) DialContext(dialer net.Dialer, ctx context.Context, network string, address string) (net.Conn, error) {

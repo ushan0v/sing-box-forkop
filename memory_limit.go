@@ -71,25 +71,59 @@ type memoryLimiter struct {
 	closed   bool
 }
 
+// The limit belongs to the process, while a reload keeps the old instance alive beside the
+// new one: they share one limiter, and it lifts the limit when the last of them stops.
+var sharedMemoryLimit struct {
+	access  sync.Mutex
+	limiter *memoryLimiter
+	users   int
+}
+
 // startMemoryLimit sets the limit and keeps it following the system; the returned function
 // stops that and lifts the limit.
 func startMemoryLimit(logger log.ContextLogger, options option.DebugOptions) func() {
+	shared := &sharedMemoryLimit
+	shared.access.Lock()
+	defer shared.access.Unlock()
 	if os.Getenv("GOMEMLIMIT") != "" || options.MemoryLimit.Value() != 0 {
+		// The limit set by hand is already in force; the limiter would overwrite it, and
+		// lift it once the old instance stops.
+		if shared.limiter != nil {
+			shared.limiter.stop()
+			shared.limiter = nil
+		}
 		return func() {}
 	}
-	limiter := newMemoryLimiter(systemMemoryFiles)
-	limiter.logger = logger
-	limit, known := limiter.compute(readGoMemory(limiter.samples))
-	if !known {
-		logger.Debug("memory limit: the available memory is unknown, no limit set")
-		return func() {}
+	if shared.limiter == nil {
+		limiter := newMemoryLimiter(systemMemoryFiles)
+		limiter.logger = logger
+		limit, known := limiter.compute(readGoMemory(limiter.samples))
+		if !known {
+			logger.Debug("memory limit: the available memory is unknown, no limit set")
+			return func() {}
+		}
+		limiter.limit = limit
+		debug.SetMemoryLimit(int64(limit))
+		logger.Info("memory limit ", byteformats.FormatMemoryBytes(limit), ", following the available memory")
+		go limiter.loop()
+		limiter.armGC()
+		shared.limiter = limiter
+		shared.users = 0
 	}
-	limiter.limit = limit
-	debug.SetMemoryLimit(int64(limit))
-	logger.Info("memory limit ", byteformats.FormatMemoryBytes(limit), ", following the available memory")
-	go limiter.loop()
-	limiter.armGC()
-	return limiter.close
+	shared.users++
+	limiter := shared.limiter
+	return func() {
+		shared.access.Lock()
+		defer shared.access.Unlock()
+		if shared.limiter != limiter {
+			return
+		}
+		shared.users--
+		if shared.users == 0 {
+			limiter.close()
+			shared.limiter = nil
+		}
+	}
 }
 
 func newMemoryLimiter(files memoryFiles) *memoryLimiter {
@@ -141,14 +175,21 @@ func (l *memoryLimiter) loop() {
 }
 
 func (l *memoryLimiter) close() {
+	if l.stop() {
+		debug.SetMemoryLimit(math.MaxInt64)
+	}
+}
+
+// stop stops following the system and leaves the limit as it is.
+func (l *memoryLimiter) stop() bool {
 	l.access.Lock()
 	defer l.access.Unlock()
 	if l.closed {
-		return
+		return false
 	}
 	l.closed = true
 	close(l.done)
-	debug.SetMemoryLimit(math.MaxInt64)
+	return true
 }
 
 func (l *memoryLimiter) isClosed() bool {

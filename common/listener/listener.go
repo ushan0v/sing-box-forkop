@@ -121,6 +121,7 @@ func (l *Listener) Start() error {
 }
 
 func (l *Listener) Close() error {
+	l.unhold()
 	l.shutdown.Store(true)
 	var err error
 	if l.systemProxy != nil {

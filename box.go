@@ -15,6 +15,7 @@ import (
 	"github.com/sagernet/sing-box/common/certificate"
 	"github.com/sagernet/sing-box/common/dialer"
 	"github.com/sagernet/sing-box/common/httpclient"
+	"github.com/sagernet/sing-box/common/listener"
 	"github.com/sagernet/sing-box/common/netns"
 	"github.com/sagernet/sing-box/common/taskmonitor"
 	"github.com/sagernet/sing-box/common/tls"
@@ -60,6 +61,7 @@ type Box struct {
 	httpClientService   adapter.LifecycleService
 	internalService     []adapter.LifecycleService
 	ntpService          *ntp.Service
+	listenerOwner       *listener.Owner
 	scope               *adapter.Scope
 }
 
@@ -122,6 +124,7 @@ func New(options Options) (*Box, error) {
 		ctx = context.Background()
 	}
 	ctx = service.ContextWithDefaultRegistry(ctx)
+	ctx, listenerOwner := listener.ContextWithOwner(ctx)
 	if service.PtrFromContext[urltest.Coordinator](ctx) == nil {
 		service.MustRegisterPtr(ctx, urltest.NewCoordinator())
 	}
@@ -528,6 +531,7 @@ func New(options Options) (*Box, error) {
 		logger:              logFactory.Logger(),
 		internalService:     internalServices,
 		ntpService:          ntpService,
+		listenerOwner:       listenerOwner,
 		scope:               adapter.NewScope(ctx, logFactory.Logger()),
 	}, nil
 }
@@ -708,6 +712,39 @@ func (s *Box) start() error {
 
 func (s *Box) Close() error {
 	return s.scope.Close()
+}
+
+// Release lets go of what only one instance may hold, so that the instance taking over can
+// start beside this one, which goes on serving the connections it has: the endpoints, whose
+// ports and node state the other would contend for, the fakeip address tables, and the cache
+// file. The listeners go on accepting until the other takes their sockets over; meanwhile
+// this one gives out no new fakeip address.
+func (s *Box) Release() error {
+	s.listenerOwner.Release()
+	errors := []error{s.scope.Remove(s.endpoint)}
+	for _, transport := range s.dnsTransport.Transports() {
+		fakeIPTransport, isFakeIP := transport.(adapter.FakeIPTransport)
+		if isFakeIP {
+			errors = append(errors, fakeIPTransport.Store().Close())
+		}
+	}
+	for _, internalService := range s.internalService {
+		if _, isCacheFile := internalService.(adapter.CacheFile); isCacheFile {
+			errors = append(errors, s.scope.Remove(internalService))
+		}
+	}
+	return E.Errors(errors...)
+}
+
+// ConnectionCount is the number of connections the instance serves.
+func (s *Box) ConnectionCount() int {
+	return s.connection.Count()
+}
+
+// CloseReleasedListeners closes the listeners Release gave up that the instance taking over
+// did not take, once it has started.
+func (s *Box) CloseReleasedListeners() error {
+	return s.listenerOwner.CloseReleased()
 }
 
 func (s *Box) Network() adapter.NetworkManager {
